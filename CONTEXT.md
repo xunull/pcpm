@@ -1,8 +1,12 @@
 # pcpm
 
-A CLI (Go + cobra + viper) for finding processes on a machine that have been orphaned to init — surfacing dev/app processes that outlived the shell or tool that launched them.
+A CLI (Go + cobra + viper) for surfacing processes on your machine that are worth a second look: local TCP port **Listeners** (e.g. a dev server you forgot to stop) and, on Linux, application processes **orphaned to init**.
 
 ## Language
+
+**Listener**:
+A process the current user owns that holds a listening TCP socket, surfaced together with the port(s) it listens on. pcpm's primary target — it lets you spot a process you forgot was running (a stray dev server, a leftover script) by the port it occupies. pcpm lists listeners plainly and lets you judge; it does not guess which are "leftover".
+_Avoid_: server, service, daemon, port hog
 
 **Orphaned Application Process**:
 A process that (a) has been reparented to init so its PPID is 1, (b) is owned by a real login user rather than root or a system service account, and (c) is not a daemon legitimately managed by init/systemd/launchd. This is the tool's target — e.g. a dev server (`next-server`) still running after the shell or tool that launched it died.
