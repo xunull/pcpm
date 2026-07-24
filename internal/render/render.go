@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/xunull/pcpm/internal/listen"
 	"github.com/xunull/pcpm/internal/orphan"
 )
 
@@ -103,51 +104,147 @@ func JSON(procs []orphan.Process) (string, error) {
 	return b.String(), nil
 }
 
-type cell struct{ pid, user, age, name, cmd string }
+// jsonPort is the machine-readable view of a listening port.
+type jsonPort struct {
+	Port    uint32 `json:"port"`
+	Exposed bool   `json:"exposed"`
+}
 
-// Table renders candidates as an aligned text table with columns
-// PID / USER / AGE / NAME / COMMAND. COMMAND is truncated so each row fits
-// within width columns; width <= 0 disables truncation (e.g. when piped).
+// jsonListener is the machine-readable view of a Listener: every field, and its
+// ports as an array. CreateTime is RFC 3339, or empty when unknown.
+type jsonListener struct {
+	PID        int32      `json:"pid"`
+	UID        int32      `json:"uid"`
+	User       string     `json:"user"`
+	Name       string     `json:"name"`
+	Cmdline    string     `json:"cmdline"`
+	CreateTime string     `json:"create_time"`
+	Ports      []jsonPort `json:"ports"`
+}
+
+// ListenersJSON renders listeners as an indented JSON array with all fields
+// untruncated and a ports array per process. No listeners renders "[]".
+func ListenersJSON(ls []listen.Listener) (string, error) {
+	views := make([]jsonListener, len(ls))
+	for i, l := range ls {
+		v := jsonListener{
+			PID:     l.PID,
+			UID:     l.UID,
+			User:    l.User,
+			Name:    l.Name,
+			Cmdline: l.Cmdline,
+			Ports:   make([]jsonPort, len(l.Ports)),
+		}
+		if !l.Created.IsZero() {
+			v.CreateTime = l.Created.UTC().Format(time.RFC3339)
+		}
+		for j, p := range l.Ports {
+			v.Ports[j] = jsonPort{Port: p.Number, Exposed: p.Exposed}
+		}
+		views[i] = v
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(views); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+// Grid renders rows as an aligned text table under the given headers. Every
+// column but the last is padded to its widest cell; the last column is
+// truncated so each line fits within width (width <= 0 disables truncation).
+// A row may have fewer cells than there are headers; missing cells render empty.
+func Grid(header []string, rows [][]string, width int) string {
+	cols := len(header)
+	w := make([]int, cols)
+	for i, h := range header {
+		w[i] = len(h)
+	}
+	for _, r := range rows {
+		for i := 0; i < cols && i < len(r); i++ {
+			w[i] = max(w[i], len(r[i]))
+		}
+	}
+	at := func(r []string, i int) string {
+		if i < len(r) {
+			return r[i]
+		}
+		return ""
+	}
+
+	var b strings.Builder
+	writeRow := func(r []string) {
+		var prefix strings.Builder
+		for i := 0; i < cols-1; i++ {
+			fmt.Fprintf(&prefix, "%-*s  ", w[i], at(r, i))
+		}
+		last := at(r, cols-1)
+		if width > 0 {
+			last = truncate(last, max(0, width-prefix.Len()))
+		}
+		b.WriteString(strings.TrimRight(prefix.String()+last, " "))
+		b.WriteByte('\n')
+	}
+
+	writeRow(header)
+	for _, r := range rows {
+		writeRow(r)
+	}
+	return b.String()
+}
+
+// Table renders orphan candidates as an aligned table with columns
+// PID / USER / AGE / NAME / COMMAND, in the order the caller supplies.
 func Table(procs []orphan.Process, now time.Time, width int) string {
-	header := cell{pid: "PID", user: "USER", age: "AGE", name: "NAME", cmd: "COMMAND"}
-
-	rows := make([]cell, len(procs))
-	wPID, wUser, wAge, wName := len(header.pid), len(header.user), len(header.age), len(header.name)
+	rows := make([][]string, len(procs))
 	for i, p := range procs {
 		user := p.User
 		if user == "" {
 			user = strconv.Itoa(int(p.UID))
 		}
-		c := cell{
-			pid:  strconv.Itoa(int(p.PID)),
-			user: user,
-			age:  Age(now, p.Created),
-			name: p.Name,
-			cmd:  p.Cmdline,
+		rows[i] = []string{
+			strconv.Itoa(int(p.PID)),
+			user,
+			Age(now, p.Created),
+			p.Name,
+			p.Cmdline,
 		}
-		rows[i] = c
-		wPID = max(wPID, len(c.pid))
-		wUser = max(wUser, len(c.user))
-		wAge = max(wAge, len(c.age))
-		wName = max(wName, len(c.name))
 	}
+	return Grid([]string{"PID", "USER", "AGE", "NAME", "COMMAND"}, rows, width)
+}
 
-	var b strings.Builder
-	writeRow := func(c cell) {
-		prefix := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  ", wPID, c.pid, wUser, c.user, wAge, c.age, wName, c.name)
-		cmd := c.cmd
-		if width > 0 {
-			cmd = truncate(cmd, max(0, width-len(prefix)))
+// ListenersTable renders listeners as an aligned table with columns
+// PID / PORTS / AGE / NAME / COMMAND. PORTS is comma-joined; a network-exposed
+// port (bound to all interfaces) gets a trailing "*".
+func ListenersTable(ls []listen.Listener, now time.Time, width int) string {
+	rows := make([][]string, len(ls))
+	for i, l := range ls {
+		rows[i] = []string{
+			strconv.Itoa(int(l.PID)),
+			formatPorts(l.Ports),
+			Age(now, l.Created),
+			l.Name,
+			l.Cmdline,
 		}
-		b.WriteString(strings.TrimRight(prefix+cmd, " "))
-		b.WriteByte('\n')
 	}
+	return Grid([]string{"PID", "PORTS", "AGE", "NAME", "COMMAND"}, rows, width)
+}
 
-	writeRow(header)
-	for _, c := range rows {
-		writeRow(c)
+// formatPorts joins a listener's ports as e.g. "3000,5000*", marking each
+// network-exposed port with a trailing "*".
+func formatPorts(ports []listen.Port) string {
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		s := strconv.FormatUint(uint64(p.Number), 10)
+		if p.Exposed {
+			s += "*"
+		}
+		parts[i] = s
 	}
-	return b.String()
+	return strings.Join(parts, ",")
 }
 
 // truncate shortens s to at most n bytes, marking any cut with a trailing
