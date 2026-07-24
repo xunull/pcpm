@@ -34,7 +34,8 @@ func TestAge(t *testing.T) {
 
 func TestJSON(t *testing.T) {
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	longCmd := strings.Repeat("x", 500)
+	// shell operators lock in both untruncated copy and no HTML-escaping
+	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
 	procs := []orphan.Process{
 		{PID: 10, PPID: 1, UID: 501, User: "quincy", Name: "next-server", Cmdline: longCmd, Created: created},
 	}
@@ -66,7 +67,10 @@ func TestJSON(t *testing.T) {
 		t.Errorf("string fields wrong: %v", e)
 	}
 	if e["cmdline"] != longCmd {
-		t.Errorf("cmdline was altered/truncated (len got %d, want 500)", len(e["cmdline"].(string)))
+		t.Errorf("cmdline was altered/truncated (len got %d, want %d)", len(e["cmdline"].(string)), len(longCmd))
+	}
+	if !strings.Contains(out, "&&") {
+		t.Errorf("cmdline should not be HTML-escaped (& kept literal for jq); raw:\n%s", out)
 	}
 	if e["create_time"] != "2026-01-02T03:04:05Z" {
 		t.Errorf("create_time = %v, want 2026-01-02T03:04:05Z", e["create_time"])

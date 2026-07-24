@@ -74,8 +74,10 @@ func runOrphans(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("rendering json: %w", err)
 		}
 		fmt.Fprint(out, body)
-	default:
+	case render.FormatTable:
 		fmt.Fprint(out, render.Table(candidates, time.Now(), terminalWidth(out)))
+	default:
+		return fmt.Errorf("unhandled output format %v", format)
 	}
 
 	if failOnFound, _ := cmd.Flags().GetBool("fail-on-found"); failOnFound && len(candidates) > 0 {

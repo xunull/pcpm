@@ -92,11 +92,15 @@ func JSON(procs []orphan.Process) (string, error) {
 		}
 		views[i] = v
 	}
-	b, err := json.MarshalIndent(views, "", "  ")
-	if err != nil {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	// cmdlines routinely contain &, <, >; keep them literal for jq and humans.
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(views); err != nil {
 		return "", err
 	}
-	return string(b) + "\n", nil
+	return b.String(), nil
 }
 
 type cell struct{ pid, user, age, name, cmd string }
