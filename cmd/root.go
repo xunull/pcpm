@@ -3,11 +3,6 @@ package cmd
 
 import "github.com/spf13/cobra"
 
-// configPath backs the --config persistent flag. It is registered here so the
-// whole command tree shares it; the config file it points at is wired up in a
-// later ticket (viper).
-var configPath string
-
 var rootCmd = &cobra.Command{
 	Use:   "pcpm",
 	Short: "Find processes that have been orphaned to init",
@@ -17,8 +12,6 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&configPath, "config", "",
-		"config file (default: $XDG_CONFIG_HOME/pcpm/config.yaml)")
 	rootCmd.AddCommand(orphansCmd)
 }
 

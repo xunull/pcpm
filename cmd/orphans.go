@@ -14,8 +14,6 @@ import (
 	"github.com/xunull/pcpm/internal/render"
 )
 
-var minUID int32
-
 var orphansCmd = &cobra.Command{
 	Use:     "orphans",
 	Aliases: []string{"orphan"},
@@ -28,23 +26,13 @@ var orphansCmd = &cobra.Command{
 	RunE: runOrphans,
 }
 
-func init() {
-	orphansCmd.Flags().Int32Var(&minUID, "min-uid", 0,
-		"minimum uid treated as a real login user (default: 1000 on Linux, 500 on macOS)")
-}
-
 func runOrphans(cmd *cobra.Command, _ []string) error {
 	procs, err := orphan.Collect()
 	if err != nil {
 		return fmt.Errorf("collecting processes: %w", err)
 	}
 
-	mu := minUID
-	if !cmd.Flags().Changed("min-uid") {
-		mu = orphan.DefaultMinUID(runtime.GOOS)
-	}
-
-	candidates := orphan.Candidates(procs, mu)
+	candidates := orphan.Candidates(procs, orphan.DefaultMinUID(runtime.GOOS))
 
 	out := cmd.OutOrStdout()
 	fmt.Fprint(out, render.Table(candidates, time.Now(), terminalWidth(out)))

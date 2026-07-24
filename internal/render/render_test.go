@@ -17,6 +17,7 @@ func TestAge(t *testing.T) {
 		{"minutes", now.Add(-45 * time.Minute), "45m"},
 		{"seconds", now.Add(-30 * time.Second), "30s"},
 		{"future clamps to zero", now.Add(5 * time.Minute), "0s"},
+		{"unknown created time", time.Time{}, "?"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

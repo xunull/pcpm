@@ -7,14 +7,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xunull/pcpm/internal/orphan"
 )
 
+// ellipsis marks a value that has been cut short to fit its column.
+const ellipsis = "…"
+
 // Age renders how long a process has been running as a compact two-unit string
 // like "3d4h", "6h12m", "45m", or "30s". A created time in the future (clock
-// skew) clamps to "0s".
+// skew) clamps to "0s"; an unknown created time (zero value) renders "?".
 func Age(now, created time.Time) string {
+	if created.IsZero() {
+		return "?"
+	}
 	d := max(now.Sub(created), 0)
 	days := int(d / (24 * time.Hour))
 	hours := int((d % (24 * time.Hour)) / time.Hour)
@@ -32,20 +39,16 @@ func Age(now, created time.Time) string {
 	}
 }
 
+type cell struct{ pid, user, age, name, cmd string }
+
 // Table renders candidates as an aligned text table with columns
 // PID / USER / AGE / NAME / COMMAND. COMMAND is truncated so each row fits
 // within width columns; width <= 0 disables truncation (e.g. when piped).
 func Table(procs []orphan.Process, now time.Time, width int) string {
-	const (
-		hPID  = "PID"
-		hUser = "USER"
-		hAge  = "AGE"
-		hName = "NAME"
-		hCmd  = "COMMAND"
-	)
-	type cell struct{ pid, user, age, name, cmd string }
+	header := cell{pid: "PID", user: "USER", age: "AGE", name: "NAME", cmd: "COMMAND"}
+
 	rows := make([]cell, len(procs))
-	wPID, wUser, wAge, wName := len(hPID), len(hUser), len(hAge), len(hName)
+	wPID, wUser, wAge, wName := len(header.pid), len(header.user), len(header.age), len(header.name)
 	for i, p := range procs {
 		user := p.User
 		if user == "" {
@@ -66,25 +69,25 @@ func Table(procs []orphan.Process, now time.Time, width int) string {
 	}
 
 	var b strings.Builder
-	writeRow := func(pid, user, age, name, cmd string) {
-		prefix := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  ", wPID, pid, wUser, user, wAge, age, wName, name)
+	writeRow := func(c cell) {
+		prefix := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  ", wPID, c.pid, wUser, c.user, wAge, c.age, wName, c.name)
+		cmd := c.cmd
 		if width > 0 {
-			if avail := width - len(prefix); avail >= 0 {
-				cmd = truncate(cmd, avail)
-			}
+			cmd = truncate(cmd, max(0, width-len(prefix)))
 		}
 		b.WriteString(strings.TrimRight(prefix+cmd, " "))
 		b.WriteByte('\n')
 	}
 
-	writeRow(hPID, hUser, hAge, hName, hCmd)
+	writeRow(header)
 	for _, c := range rows {
-		writeRow(c.pid, c.user, c.age, c.name, c.cmd)
+		writeRow(c)
 	}
 	return b.String()
 }
 
-// truncate shortens s to at most n bytes, marking any cut with a trailing "…".
+// truncate shortens s to at most n bytes, marking any cut with a trailing
+// ellipsis. It never cuts in the middle of a UTF-8 rune.
 func truncate(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -92,8 +95,17 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	if n == 1 {
-		return "…"
+	// Reserve room for the ellipsis when it fits, then back the cut up to the
+	// nearest rune boundary so we never emit an invalid UTF-8 fragment.
+	cut := n
+	if n > len(ellipsis) {
+		cut = n - len(ellipsis)
 	}
-	return s[:n-1] + "…"
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if n > len(ellipsis) {
+		return s[:cut] + ellipsis
+	}
+	return s[:cut]
 }

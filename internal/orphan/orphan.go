@@ -5,7 +5,7 @@
 package orphan
 
 import (
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -44,8 +44,8 @@ func Candidates(procs []Process, minUID int32) []Process {
 			out = append(out, p)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Created.Before(out[j].Created)
+	slices.SortStableFunc(out, func(a, b Process) int {
+		return a.Created.Compare(b.Created)
 	})
 	return out
 }
