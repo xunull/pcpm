@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,11 @@ import (
 	"github.com/xunull/pcpm/internal/orphan"
 	"github.com/xunull/pcpm/internal/render"
 )
+
+// ErrCandidatesFound is returned by `orphans --fail-on-found` when at least one
+// candidate was listed. It carries no user-facing message: the exit status is
+// the signal and the listing is already on stdout (see main).
+var ErrCandidatesFound = errors.New("orphaned application process candidates found")
 
 var orphansCmd = &cobra.Command{
 	Use:     "orphans",
@@ -32,9 +38,18 @@ func init() {
 		"minimum uid treated as a real login user")
 	orphansCmd.Flags().StringArray("ignore", nil,
 		"glob (matched against process name) to ignore; repeatable, adds to config")
+	orphansCmd.Flags().StringP("output", "o", "table", "output format: table | json")
+	orphansCmd.Flags().Bool("fail-on-found", false, "exit non-zero if any candidate is found")
 }
 
 func runOrphans(cmd *cobra.Command, _ []string) error {
+	// Validate the output format before the (comparatively expensive) scan.
+	outputFlag, _ := cmd.Flags().GetString("output")
+	format, err := render.ParseFormat(outputFlag)
+	if err != nil {
+		return err
+	}
+
 	cfg, err := config.Load(cmd.Flags(), configPath, runtime.GOOS)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -52,7 +67,20 @@ func runOrphans(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprint(out, render.Table(candidates, time.Now(), terminalWidth(out)))
+	switch format {
+	case render.FormatJSON:
+		body, err := render.JSON(candidates)
+		if err != nil {
+			return fmt.Errorf("rendering json: %w", err)
+		}
+		fmt.Fprint(out, body)
+	default:
+		fmt.Fprint(out, render.Table(candidates, time.Now(), terminalWidth(out)))
+	}
+
+	if failOnFound, _ := cmd.Flags().GetBool("fail-on-found"); failOnFound && len(candidates) > 0 {
+		return ErrCandidatesFound
+	}
 	return nil
 }
 

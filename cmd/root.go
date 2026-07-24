@@ -13,6 +13,9 @@ var rootCmd = &cobra.Command{
 	Long: "pcpm finds orphaned application processes — dev/app processes " +
 		"reparented to init (PPID 1) after the shell or tool that launched them died.",
 	SilenceUsage: true,
+	// main owns error reporting (and the ErrCandidatesFound signal), so cobra
+	// should not also print errors.
+	SilenceErrors: true,
 }
 
 func init() {
