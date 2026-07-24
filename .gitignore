@@ -1,0 +1,6 @@
+# Compiled pcpm binary
+/pcpm
+
+# Go build / test artifacts
+*.test
+*.out
