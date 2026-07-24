@@ -3,6 +3,10 @@ package cmd
 
 import "github.com/spf13/cobra"
 
+// configPath backs the --config persistent flag; empty means "search the
+// default per-user config directory".
+var configPath string
+
 var rootCmd = &cobra.Command{
 	Use:   "pcpm",
 	Short: "Find processes that have been orphaned to init",
@@ -12,6 +16,8 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "",
+		"config file (default: $XDG_CONFIG_HOME/pcpm/config.yaml)")
 	rootCmd.AddCommand(orphansCmd)
 }
 

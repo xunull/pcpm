@@ -5,6 +5,8 @@
 package orphan
 
 import (
+	"fmt"
+	"path"
 	"slices"
 	"time"
 )
@@ -48,4 +50,37 @@ func Candidates(procs []Process, minUID int32) []Process {
 		return a.Created.Compare(b.Created)
 	})
 	return out
+}
+
+// ApplyIgnore returns the processes whose Name matches none of the glob
+// patterns. Patterns use path.Match syntax (e.g. "ssh-agent", "*.helper"); this
+// is how a user suppresses known-good or intentionally-backgrounded processes.
+// A malformed pattern is reported as an error rather than silently ignored.
+func ApplyIgnore(procs []Process, patterns []string) ([]Process, error) {
+	for _, pat := range patterns {
+		if _, err := path.Match(pat, ""); err != nil {
+			return nil, fmt.Errorf("invalid ignore pattern %q: %w", pat, err)
+		}
+	}
+	if len(patterns) == 0 {
+		return procs, nil
+	}
+	out := make([]Process, 0, len(procs))
+	for _, p := range procs {
+		if !ignored(p.Name, patterns) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// ignored reports whether name matches any of the glob patterns. Patterns are
+// assumed valid (ApplyIgnore checks them up front).
+func ignored(name string, patterns []string) bool {
+	for _, pat := range patterns {
+		if ok, _ := path.Match(pat, name); ok {
+			return true
+		}
+	}
+	return false
 }

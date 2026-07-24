@@ -34,3 +34,32 @@ func TestDefaultMinUID(t *testing.T) {
 		t.Errorf("linux: want 1000, got %d", got)
 	}
 }
+
+func TestApplyIgnore(t *testing.T) {
+	procs := []Process{
+		{PID: 1, Name: "next-server"},
+		{PID: 2, Name: "ssh-agent"},
+		{PID: 3, Name: "com.apple.helper"},
+		{PID: 4, Name: "vite"},
+	}
+
+	// exact match ("ssh-agent") and glob ("*.helper") are dropped; order kept
+	got, err := ApplyIgnore(procs, []string{"ssh-agent", "*.helper"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].PID != 1 || got[1].PID != 4 {
+		t.Fatalf("want kept [1, 4], got %+v", got)
+	}
+
+	// no patterns keeps everything
+	all, err := ApplyIgnore(procs, nil)
+	if err != nil || len(all) != 4 {
+		t.Errorf("nil patterns: want 4 kept and no error, got %d err=%v", len(all), err)
+	}
+
+	// a malformed glob is reported, not silently ignored
+	if _, err := ApplyIgnore(procs, []string{"["}); err == nil {
+		t.Error("want error for malformed pattern \"[\", got nil")
+	}
+}

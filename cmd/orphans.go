@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/xunull/pcpm/internal/config"
 	"github.com/xunull/pcpm/internal/orphan"
 	"github.com/xunull/pcpm/internal/render"
 )
@@ -26,13 +27,29 @@ var orphansCmd = &cobra.Command{
 	RunE: runOrphans,
 }
 
+func init() {
+	orphansCmd.Flags().Int32("min-uid", orphan.DefaultMinUID(runtime.GOOS),
+		"minimum uid treated as a real login user")
+	orphansCmd.Flags().StringArray("ignore", nil,
+		"glob (matched against process name) to ignore; repeatable, adds to config")
+}
+
 func runOrphans(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(cmd.Flags(), configPath, runtime.GOOS)
+	if err != nil {
+		return err
+	}
+
 	procs, err := orphan.Collect()
 	if err != nil {
 		return fmt.Errorf("collecting processes: %w", err)
 	}
 
-	candidates := orphan.Candidates(procs, orphan.DefaultMinUID(runtime.GOOS))
+	candidates := orphan.Candidates(procs, cfg.MinUID)
+	candidates, err = orphan.ApplyIgnore(candidates, cfg.Ignore)
+	if err != nil {
+		return err
+	}
 
 	out := cmd.OutOrStdout()
 	fmt.Fprint(out, render.Table(candidates, time.Now(), terminalWidth(out)))
