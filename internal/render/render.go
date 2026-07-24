@@ -75,6 +75,19 @@ type jsonProc struct {
 	CreateTime string `json:"create_time"`
 }
 
+// encodeJSON marshals v as an indented JSON document. HTML escaping is off so
+// that &, <, > in cmdlines stay literal (jq- and human-friendly).
+func encodeJSON(v any) (string, error) {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
 // JSON renders candidates as an indented JSON array with all fields untruncated,
 // suitable for jq or scripting. No candidates renders "[]" (never "null").
 func JSON(procs []orphan.Process) (string, error) {
@@ -93,15 +106,7 @@ func JSON(procs []orphan.Process) (string, error) {
 		}
 		views[i] = v
 	}
-	var b strings.Builder
-	enc := json.NewEncoder(&b)
-	// cmdlines routinely contain &, <, >; keep them literal for jq and humans.
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(views); err != nil {
-		return "", err
-	}
-	return b.String(), nil
+	return encodeJSON(views)
 }
 
 // jsonPort is the machine-readable view of a listening port.
@@ -143,14 +148,7 @@ func ListenersJSON(ls []listen.Listener) (string, error) {
 		}
 		views[i] = v
 	}
-	var b strings.Builder
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(views); err != nil {
-		return "", err
-	}
-	return b.String(), nil
+	return encodeJSON(views)
 }
 
 // Grid renders rows as an aligned text table under the given headers. Every
@@ -164,7 +162,7 @@ func Grid(header []string, rows [][]string, width int) string {
 		w[i] = len(h)
 	}
 	for _, r := range rows {
-		for i := 0; i < cols && i < len(r); i++ {
+		for i := 0; i < cols-1 && i < len(r); i++ { // last column is never padded
 			w[i] = max(w[i], len(r[i]))
 		}
 	}
