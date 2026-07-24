@@ -21,11 +21,12 @@ type Config struct {
 }
 
 // Load resolves configuration with precedence flag > env (PCPM_*) > config file
-// > built-in default. The ignore list is the UNION of the file/env list and any
-// --ignore flags: flags add to the configured list, they do not replace it. A
-// missing config file is not an error. explicitPath, when non-empty, is used
-// verbatim; otherwise the default per-user config directory is searched. goos
-// selects the default min_uid (see orphan.DefaultMinUID).
+// > built-in default. For ignore, viper resolves the configured list (env else
+// file else default) and any --ignore flags are then appended to it — flags add
+// to the configured list, they do not replace it. A missing config file is not
+// an error. explicitPath, when non-empty, is used verbatim; otherwise the
+// default per-user config directory is searched. goos selects the default
+// min_uid (see orphan.DefaultMinUID).
 func Load(flags *pflag.FlagSet, explicitPath, goos string) (Config, error) {
 	v := viper.New()
 	v.SetDefault("min_uid", int(orphan.DefaultMinUID(goos)))
@@ -46,7 +47,9 @@ func Load(flags *pflag.FlagSet, explicitPath, goos string) (Config, error) {
 	} else {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
-		v.AddConfigPath(DefaultDir())
+		if dir := DefaultDir(); dir != "" {
+			v.AddConfigPath(dir)
+		}
 	}
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
@@ -76,7 +79,7 @@ func DefaultDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".config", "pcpm")
+		return "" // no known home directory; the caller skips this search path
 	}
 	return filepath.Join(home, ".config", "pcpm")
 }

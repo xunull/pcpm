@@ -37,7 +37,7 @@ func init() {
 func runOrphans(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(cmd.Flags(), configPath, runtime.GOOS)
 	if err != nil {
-		return err
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	procs, err := orphan.Collect()
@@ -48,7 +48,7 @@ func runOrphans(cmd *cobra.Command, _ []string) error {
 	candidates := orphan.Candidates(procs, cfg.MinUID)
 	candidates, err = orphan.ApplyIgnore(candidates, cfg.Ignore)
 	if err != nil {
-		return err
+		return fmt.Errorf("applying ignore list: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
