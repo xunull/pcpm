@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xunull/pcpm/internal/listen"
 	"github.com/xunull/pcpm/internal/orphan"
 )
 
@@ -83,6 +84,80 @@ func TestJSON(t *testing.T) {
 	}
 	if strings.TrimSpace(empty) != "[]" {
 		t.Errorf("empty input: want [], got %q", empty)
+	}
+}
+
+func TestGrid(t *testing.T) {
+	header := []string{"PID", "NAME", "CMD"}
+	rows := [][]string{
+		{"1", "a", "short"},
+		{"1000", "longname", strings.Repeat("x", 40)},
+	}
+
+	// width 0 => no truncation; header + 2 rows, columns aligned
+	full := Grid(header, rows, 0)
+	lines := strings.Split(strings.TrimSuffix(full, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want header + 2 rows, got %d lines:\n%s", len(lines), full)
+	}
+	col2 := strings.Index(lines[0], "NAME") // where the second column begins
+	if !strings.HasPrefix(lines[1][col2:], "a ") || !strings.HasPrefix(lines[2][col2:], "longname") {
+		t.Errorf("second column not aligned at offset %d:\n%s", col2, full)
+	}
+
+	// narrow width => last column truncated with an ellipsis, no line exceeds width
+	narrow := Grid(header, rows, 30)
+	for _, ln := range strings.Split(strings.TrimSuffix(narrow, "\n"), "\n") {
+		if len(ln) > 30 {
+			t.Errorf("line exceeds width 30 (%d bytes): %q", len(ln), ln)
+		}
+	}
+	if !strings.Contains(narrow, "…") {
+		t.Errorf("expected an ellipsis in truncated output:\n%s", narrow)
+	}
+}
+
+func TestListenersJSON(t *testing.T) {
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ls := []listen.Listener{{
+		PID: 10, UID: 501, User: "quincy", Name: "node", Cmdline: "node server.js", Created: created,
+		Ports: []listen.Port{{Number: 3000, Exposed: false}, {Number: 5000, Exposed: true}},
+	}}
+
+	out, err := ListenersJSON(ls)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 element, got %d", len(got))
+	}
+	e := got[0]
+	for _, k := range []string{"pid", "uid", "user", "name", "cmdline", "create_time", "ports"} {
+		if _, ok := e[k]; !ok {
+			t.Errorf("missing field %q in %v", k, e)
+		}
+	}
+	ports, ok := e["ports"].([]any)
+	if !ok || len(ports) != 2 {
+		t.Fatalf("ports: want a 2-element array, got %v", e["ports"])
+	}
+	p0 := ports[0].(map[string]any)
+	p1 := ports[1].(map[string]any)
+	if p0["port"] != float64(3000) || p0["exposed"] != false {
+		t.Errorf("port[0] = %v, want {port:3000, exposed:false}", p0)
+	}
+	if p1["port"] != float64(5000) || p1["exposed"] != true {
+		t.Errorf("port[1] = %v, want {port:5000, exposed:true}", p1)
+	}
+
+	empty, err := ListenersJSON(nil)
+	if err != nil || strings.TrimSpace(empty) != "[]" {
+		t.Errorf("empty input: want [] and no error, got %q err=%v", empty, err)
 	}
 }
 
