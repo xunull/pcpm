@@ -1,0 +1,92 @@
+name: ci
+
+# PR 与 push main 时跑。矩阵覆盖 ubuntu + macos:pcpm 目标平台是 Linux + macOS
+# (ADR-0001),但开发全程在 mac 上进行,syscall.Getpgid、gopsutil 的 Linux 路径
+# 从未在 Linux 上验证过 —— 这条矩阵就是用来关掉这个缺口的。
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 只读:CI 不需要写任何东西(发布权限在 release.yml 里单独给)。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 构建与测试 ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个平台挂了也要看到另一个平台的结果
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod # 版本以 go.mod 为准,不在两处各写一遍
+          cache: true
+
+      - name: 构建
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt 检查
+        # gofmt -l 只列出未格式化的文件、退出码恒为 0,所以要自己判空来让 CI 失败。
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化,请运行 gofmt -w:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 测试
+        # -count=1 关掉测试缓存,确保每次 CI 都真的跑一遍。
+        run: go test ./... -count=1
+
+  # 发布配置是声明式的,写错了很难一眼看出,却要等打 tag 才暴露 —— 而那时 tag 已经推出去,
+  # 修起来得删/挪 tag。所以在 PR 阶段就干跑一次:check 校验配置,build --snapshot 真的
+  # 构建四个目标但不发布任何东西。
+  goreleaser:
+    name: 发布配置干跑
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # snapshot 版本号取自 git 描述
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 校验配置
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: 干跑构建(不发布)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean
+
+      # formula 有 test do 块可以跑 `pcpm version` 验证装出来的东西能用,cask 没有等价物,
+      # 所以在这里补上:真的执行一次发布产物,确认它能启动且版本已注入(不是 "dev")。
+      - name: 验证产物可运行且版本已注入
+        run: |
+          set -euo pipefail
+          binary=dist/pcpm_linux_amd64_v1/pcpm
+          out="$("$binary" version)"
+          echo "$out"
+          echo "$out" | grep -q '^pcpm ' || { echo "版本输出格式不对"; exit 1; }
+          if echo "$out" | grep -q '^pcpm dev$'; then
+            echo "版本未注入:ldflags 没生效"; exit 1
+          fi

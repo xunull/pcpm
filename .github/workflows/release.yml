@@ -1,0 +1,47 @@
+name: release
+
+# 推 vX.Y.Z tag 触发。发布 = 手动打 tag,CI 不会自动打。
+#
+# 单 runner 交叉编译四个目标(pcpm 是纯 Go,CGO_ENABLED=0),由 GoReleaser 汇总发一个
+# GitHub Release,并把 cask 推到 xunull/homebrew-tap。为何用 GoReleaser 而非兄弟项目
+# inhomo 那套自研 brewgen,见 docs/adr/0006-release-with-goreleaser.md。
+#
+# ⚠️ 打第一个 tag 之前,必须先在本仓库配好 TAP_PUSH_TOKEN secret(对 xunull/homebrew-tap
+#    有 contents:write 的 fine-grained PAT),否则推 cask 那步会直接失败:
+#      gh secret set TAP_PUSH_TOKEN -R xunull/pcpm
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 建 Release 需要写权限
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser 生成 changelog 需要完整 git 历史
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 先跑测试:测试挂了就不该发版。
+      - name: 测试
+        run: go test ./... -count=1
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          # 最小权限:GITHUB_TOKEN 只用于在本仓库建 Release;
+          # TAP_PUSH_TOKEN 只用于把 cask 推到另一个仓库(homebrew-tap)。
+          # 不把 PAT 直接当 GITHUB_TOKEN 用,避免它获得本仓库的全部操作权限。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}

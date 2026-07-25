@@ -5,4 +5,7 @@
 *.test
 *.out
 
+# GoReleaser output
+/dist/
+
 local-docs/
