@@ -50,9 +50,20 @@ func Detect(procs []Process, portsByPID map[int32][]listen.Port) []Tree {
 		children[p.PPID] = append(children[p.PPID], p.PID)
 	}
 
-	var out []Tree
+	var candidates []Process
+	roots := make(map[int32]bool)
 	for _, p := range procs {
-		if !isForgotten(p, byPID) {
+		if isForgottenRoot(p, byPID) && !isNoise(p.Cmdline) {
+			candidates = append(candidates, p)
+			roots[p.PID] = true
+		}
+	}
+
+	var out []Tree
+	for _, p := range candidates {
+		// A candidate inside another candidate's tree is part of that tree, not
+		// a finding of its own — reporting both would count it twice.
+		if hasForgottenAncestor(p, byPID, roots) {
 			continue
 		}
 		members := treeMembers(p.PID, children)
@@ -64,6 +75,23 @@ func Detect(procs []Process, portsByPID map[int32][]listen.Port) []Tree {
 	}
 	slices.SortStableFunc(out, func(a, b Tree) int { return a.Root.Created.Compare(b.Root.Created) })
 	return out
+}
+
+// hasForgottenAncestor reports whether any ancestor of p is itself a forgotten
+// root, which makes p a member of that tree rather than a root in its own right.
+func hasForgottenAncestor(p Process, byPID map[int32]Process, roots map[int32]bool) bool {
+	seen := map[int32]bool{p.PID: true}
+	for current := p; ; {
+		parent, ok := byPID[current.PPID]
+		if !ok || seen[parent.PID] {
+			return false
+		}
+		if roots[parent.PID] {
+			return true
+		}
+		seen[parent.PID] = true
+		current = parent
+	}
 }
 
 // ApplyIgnore returns the trees whose root process name matches none of the
@@ -99,8 +127,9 @@ func matchesAny(name string, patterns []string) bool {
 	return false
 }
 
-// isForgotten reports whether p is the surviving root of a job nobody cleaned
-// up. Two conditions, both required:
+// isForgottenRoot reports whether p is the surviving root of a job nobody
+// cleaned up. Two conditions, both required (noise filtering is a separate
+// layer — see isNoise):
 //
 //  1. p's process group leader is dead — the job that launched it is gone. A
 //     well-behaved daemon calls setsid() and leads its own group, so its leader
@@ -108,21 +137,23 @@ func matchesAny(name string, patterns []string) bool {
 //  2. p's parent is not in that same process group — p is the boundary where
 //     the orphaning happened, rather than a descendant inside the leftover tree
 //     (whose parent is alive and shares the dead group).
-func isForgotten(p Process, byPID map[int32]Process) bool {
+func isForgottenRoot(p Process, byPID map[int32]Process) bool {
 	if _, leaderAlive := byPID[p.PGID]; leaderAlive {
 		return false
 	}
 	if parent, ok := byPID[p.PPID]; ok && parent.PGID == p.PGID {
 		return false
 	}
-	return !isNoise(p.Cmdline)
+	return true
 }
 
 // systemPrefixes are executable paths owned by the OS: daemons launched by the
-// init system, not by anything the user was working in.
+// init system, not by anything the user was working in. Covers both target
+// platforms (ADR-0001) — the macOS locations and the Linux systemd ones.
 var systemPrefixes = []string{
 	"/System/", "/usr/libexec/", "/usr/sbin/", "/usr/bin/", "/sbin/",
 	"/Library/Apple/", "/usr/local/libexec/",
+	"/usr/lib/systemd/", "/lib/systemd/",
 }
 
 // shellPattern matches an interactive shell. A leftover shell is a closed

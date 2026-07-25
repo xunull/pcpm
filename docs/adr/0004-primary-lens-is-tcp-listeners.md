@@ -1,4 +1,14 @@
+---
+status: accepted — amended by ADR-0005
+---
+
 # Local TCP listeners are pcpm's primary lens; init-orphans are retained but Linux-mostly
+
+> **Amended by ADR-0005.** The decision to drop PPID == 1 stands, but `orphans` was
+> not worth retaining even on Linux: ADR-0005 replaces it with `pcpm forgotten`,
+> whose dead-process-group-leader rule is sharper on both platforms. TCP listeners
+> (`pcpm ports`) remain a supported lens, no longer the primary one.
+
 
 Empirically, detecting orphaned application processes by PPID == 1 does not work on macOS: launchd (PID 1) is the parent of nearly everything a user runs — daemons, agents, XPC services, app helpers, widget extensions, and reparented shells — so `pcpm orphans` surfaces hundreds of legitimate processes and almost no real leaks. Even the principled discriminator (exclude launchd-registered jobs via `launchctl list`) only removes about half; the rest are still normal macOS internals. The "PPID == 1 means orphan" model is fundamentally a Linux one.
 

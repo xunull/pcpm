@@ -46,6 +46,9 @@ func TestShortPath(t *testing.T) {
 		{"empty path", "", 40, ""},
 		{"long path keeps last two segments", "/Users/me/a/b/c/open-source/ocrserver", 20, "…/open-source/ocrserver"},
 		{"short enough is untouched", "/Users/me/a", 40, "~/a"},
+		{"home itself", "/Users/me", 40, "~"},
+		{"another user is not a home prefix", "/Users/melissa/proj", 40, "/Users/melissa/proj"},
+		{"no home known", "/Users/me/proj", 40, "~/proj"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

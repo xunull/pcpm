@@ -37,6 +37,7 @@ func init() {
 	forgottenCmd.Flags().StringArray("ignore", nil,
 		"glob (matched against process name) to ignore; repeatable, adds to config")
 	forgottenCmd.Flags().Bool("fail-on-found", false, "exit non-zero if anything is found")
+	rootCmd.AddCommand(forgottenCmd)
 }
 
 func runForgotten(cmd *cobra.Command, _ []string) error {

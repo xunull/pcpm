@@ -22,9 +22,13 @@ func Collect() ([]Process, error) {
 		if err != nil {
 			continue
 		}
+		// A process whose group can't be read is treated as leading its own
+		// group: that keeps it out of the findings and, more importantly, keeps
+		// it present as a live leader so its group members aren't misread as
+		// having lost theirs.
 		pgid, err := syscall.Getpgid(int(p.Pid))
 		if err != nil {
-			continue
+			pgid = int(p.Pid)
 		}
 		var uid int32
 		if uids, err := p.Uids(); err == nil && len(uids) > 0 {

@@ -28,7 +28,6 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "",
 		"config file (default: $XDG_CONFIG_HOME/pcpm/config.yaml)")
-	rootCmd.AddCommand(forgottenCmd)
 }
 
 // Execute runs the root command and returns any error to main.

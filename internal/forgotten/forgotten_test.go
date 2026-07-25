@@ -77,6 +77,31 @@ func TestDetect(t *testing.T) {
 	}
 }
 
+// A descendant that sits in a *different* dead group also satisfies the two
+// conditions on its own; it must still be reported as part of its ancestor's
+// tree rather than as a second finding, or its processes are counted twice.
+func TestDetectDoesNotNestRoots(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	nested := []Process{
+		{PID: 1, PPID: 0, PGID: 1, Cmdline: "/sbin/launchd"},
+		{PID: 100, PPID: 1, PGID: 900, Name: "outer", Cmdline: "outer serve", Created: base},
+		{PID: 101, PPID: 100, PGID: 910, Name: "inner", Cmdline: "inner worker", Created: base},
+	}
+
+	got := Detect(nested, nil)
+
+	if len(got) != 1 {
+		var pids []int32
+		for _, tr := range got {
+			pids = append(pids, tr.Root.PID)
+		}
+		t.Fatalf("want a single root (100), got %v", pids)
+	}
+	if got[0].Root.PID != 100 || got[0].Procs != 2 {
+		t.Errorf("want root 100 with 2 processes, got root %d with %d", got[0].Root.PID, got[0].Procs)
+	}
+}
+
 func TestApplyIgnore(t *testing.T) {
 	trees := []Tree{
 		{Root: Process{PID: 1, Name: "uv"}},

@@ -67,8 +67,14 @@ func ShortPath(path, home string, maxLen int) string {
 	if path == "" {
 		return ""
 	}
-	if home != "" && strings.HasPrefix(path, home) {
-		path = "~" + strings.TrimPrefix(path, home)
+	if home = strings.TrimSuffix(home, "/"); home != "" {
+		// Match on a path boundary, so /Users/melissa is not read as ~lissa.
+		switch {
+		case path == home:
+			path = "~"
+		case strings.HasPrefix(path, home+"/"):
+			path = "~" + strings.TrimPrefix(path, home)
+		}
 	}
 	if len(path) <= maxLen {
 		return path
