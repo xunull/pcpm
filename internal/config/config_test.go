@@ -9,10 +9,9 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// newFlags builds a flag set matching the orphans command's --min-uid / --ignore.
-func newFlags(minUIDDefault int32) *pflag.FlagSet {
+// newFlags builds a flag set matching the commands' --ignore flag.
+func newFlags() *pflag.FlagSet {
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	fs.Int32("min-uid", minUIDDefault, "")
 	fs.StringArray("ignore", nil, "")
 	return fs
 }
@@ -28,69 +27,50 @@ func writeConfig(t *testing.T, dir, body string) string {
 
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := writeConfig(t, dir, "min_uid: 1500\nignore:\n  - from-file\n")
+	cfgPath := writeConfig(t, dir, "ignore:\n  - from-file\n  - \"*.helper\"\n")
 
-	t.Run("file value used when no flag or env", func(t *testing.T) {
-		cfg, err := Load(newFlags(500), cfgPath, "darwin")
+	t.Run("file list used when no flag", func(t *testing.T) {
+		cfg, err := Load(newFlags(), cfgPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.MinUID != 1500 {
-			t.Errorf("min_uid: want 1500 (file), got %d", cfg.MinUID)
-		}
-		if !slices.Equal(cfg.Ignore, []string{"from-file"}) {
-			t.Errorf("ignore: want [from-file], got %v", cfg.Ignore)
+		if !slices.Equal(cfg.Ignore, []string{"from-file", "*.helper"}) {
+			t.Errorf("ignore: want [from-file *.helper], got %v", cfg.Ignore)
 		}
 	})
 
-	t.Run("missing file falls back to platform default, no error", func(t *testing.T) {
-		cfg, err := Load(newFlags(500), filepath.Join(dir, "does-not-exist.yaml"), "darwin")
+	t.Run("missing file is not an error", func(t *testing.T) {
+		cfg, err := Load(newFlags(), filepath.Join(dir, "does-not-exist.yaml"))
 		if err != nil {
 			t.Fatalf("missing file should not error: %v", err)
-		}
-		if cfg.MinUID != 500 {
-			t.Errorf("min_uid: want 500 (darwin default), got %d", cfg.MinUID)
 		}
 		if len(cfg.Ignore) != 0 {
 			t.Errorf("ignore: want empty, got %v", cfg.Ignore)
 		}
 	})
 
-	t.Run("flag overrides file; --ignore adds to file list", func(t *testing.T) {
-		fs := newFlags(500)
-		_ = fs.Set("min-uid", "2000")
+	t.Run("--ignore adds to the file list rather than replacing it", func(t *testing.T) {
+		fs := newFlags()
 		_ = fs.Set("ignore", "from-flag")
-		cfg, err := Load(fs, cfgPath, "darwin")
+		cfg, err := Load(fs, cfgPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.MinUID != 2000 {
-			t.Errorf("min_uid: want 2000 (flag over file), got %d", cfg.MinUID)
-		}
 		if !slices.Contains(cfg.Ignore, "from-file") || !slices.Contains(cfg.Ignore, "from-flag") {
-			t.Errorf("ignore: want union of file+flag, got %v", cfg.Ignore)
+			t.Errorf("ignore: want the union of file and flag, got %v", cfg.Ignore)
 		}
 	})
 
-	t.Run("env overrides file, flag beats env", func(t *testing.T) {
-		t.Setenv("PCPM_MIN_UID", "3000")
-
-		cfg, err := Load(newFlags(500), cfgPath, "darwin")
+	t.Run("repeated --ignore all land", func(t *testing.T) {
+		fs := newFlags()
+		_ = fs.Set("ignore", "a")
+		_ = fs.Set("ignore", "b")
+		cfg, err := Load(fs, cfgPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.MinUID != 3000 {
-			t.Errorf("min_uid: want 3000 (env over file), got %d", cfg.MinUID)
-		}
-
-		fs := newFlags(500)
-		_ = fs.Set("min-uid", "2000")
-		cfg, err = Load(fs, cfgPath, "darwin")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.MinUID != 2000 {
-			t.Errorf("min_uid: want 2000 (flag over env), got %d", cfg.MinUID)
+		if !slices.Contains(cfg.Ignore, "a") || !slices.Contains(cfg.Ignore, "b") {
+			t.Errorf("ignore: want both a and b, got %v", cfg.Ignore)
 		}
 	})
 }

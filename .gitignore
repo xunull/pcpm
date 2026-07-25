@@ -4,3 +4,5 @@
 # Go build / test artifacts
 *.test
 *.out
+
+local-docs/

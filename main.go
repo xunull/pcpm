@@ -15,7 +15,7 @@ func main() {
 	}
 	// --fail-on-found signals via exit status only; its listing is already on
 	// stdout, so don't print a redundant error line for it.
-	if !errors.Is(err, cmd.ErrCandidatesFound) {
+	if !errors.Is(err, cmd.ErrForgottenFound) {
 		fmt.Fprintln(os.Stderr, "pcpm:", err)
 	}
 	os.Exit(1)
