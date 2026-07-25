@@ -1,5 +1,4 @@
-// Package render turns orphan candidates into human- and machine-readable
-// output for the pcpm CLI.
+// Package render turns pcpm's findings into human- and machine-readable output.
 package render
 
 import (
@@ -10,14 +9,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
-	"github.com/xunull/pcpm/internal/orphan"
 )
 
 // ellipsis marks a value that has been cut short to fit its column.
 const ellipsis = "…"
 
-// Format selects how the orphans command renders its candidates.
+// Format selects how a command renders its findings.
 type Format int
 
 const (
@@ -62,17 +61,23 @@ func Age(now, created time.Time) string {
 	}
 }
 
-// jsonProc is the machine-readable view of a candidate: every field, none
-// truncated. CreateTime is RFC 3339, or empty when the process start time is
-// unknown.
-type jsonProc struct {
-	PID        int32  `json:"pid"`
-	PPID       int32  `json:"ppid"`
-	UID        int32  `json:"uid"`
-	User       string `json:"user"`
-	Name       string `json:"name"`
-	Cmdline    string `json:"cmdline"`
-	CreateTime string `json:"create_time"`
+// ShortPath renders a filesystem path for display: home becomes "~", and a path
+// still longer than maxLen collapses to its last two segments behind "…/".
+func ShortPath(path, home string, maxLen int) string {
+	if path == "" {
+		return ""
+	}
+	if home != "" && strings.HasPrefix(path, home) {
+		path = "~" + strings.TrimPrefix(path, home)
+	}
+	if len(path) <= maxLen {
+		return path
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) <= 2 {
+		return path
+	}
+	return ellipsis + "/" + strings.Join(segments[len(segments)-2:], "/")
 }
 
 // encodeJSON marshals v as an indented JSON document. HTML escaping is off so
@@ -88,21 +93,45 @@ func encodeJSON(v any) (string, error) {
 	return b.String(), nil
 }
 
-// JSON renders candidates as an indented JSON array with all fields untruncated,
-// suitable for jq or scripting. No candidates renders "[]" (never "null").
-func JSON(procs []orphan.Process) (string, error) {
-	views := make([]jsonProc, len(procs))
-	for i, p := range procs {
-		v := jsonProc{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			UID:     p.UID,
-			User:    p.User,
-			Name:    p.Name,
-			Cmdline: p.Cmdline,
+// jsonForgotten is the machine-readable view of a forgotten process tree: every
+// field, none truncated, plus the tree's size and ports. CreateTime is RFC 3339,
+// or empty when the process start time is unknown.
+type jsonForgotten struct {
+	PID        int32      `json:"pid"`
+	PPID       int32      `json:"ppid"`
+	PGID       int32      `json:"pgid"`
+	UID        int32      `json:"uid"`
+	User       string     `json:"user"`
+	Name       string     `json:"name"`
+	Cmdline    string     `json:"cmdline"`
+	Cwd        string     `json:"cwd"`
+	CreateTime string     `json:"create_time"`
+	Procs      int        `json:"procs"`
+	Ports      []jsonPort `json:"ports"`
+}
+
+// ForgottenJSON renders forgotten process trees as an indented JSON array with
+// all fields untruncated. No trees renders "[]" (never "null").
+func ForgottenJSON(trees []forgotten.Tree) (string, error) {
+	views := make([]jsonForgotten, len(trees))
+	for i, t := range trees {
+		v := jsonForgotten{
+			PID:     t.Root.PID,
+			PPID:    t.Root.PPID,
+			PGID:    t.Root.PGID,
+			UID:     t.Root.UID,
+			User:    t.Root.User,
+			Name:    t.Root.Name,
+			Cmdline: t.Root.Cmdline,
+			Cwd:     t.Root.Cwd,
+			Procs:   t.Procs,
+			Ports:   make([]jsonPort, len(t.Ports)),
 		}
-		if !p.Created.IsZero() {
-			v.CreateTime = p.Created.UTC().Format(time.RFC3339)
+		if !t.Root.Created.IsZero() {
+			v.CreateTime = t.Root.Created.UTC().Format(time.RFC3339)
+		}
+		for j, p := range t.Ports {
+			v.Ports[j] = jsonPort{Port: p.Number, Exposed: p.Exposed}
 		}
 		views[i] = v
 	}
@@ -194,24 +223,35 @@ func Grid(header []string, rows [][]string, width int) string {
 	return b.String()
 }
 
-// Table renders orphan candidates as an aligned table with columns
-// PID / USER / AGE / NAME / COMMAND, in the order the caller supplies.
-func Table(procs []orphan.Process, now time.Time, width int) string {
-	rows := make([][]string, len(procs))
-	for i, p := range procs {
-		user := p.User
-		if user == "" {
-			user = strconv.Itoa(int(p.UID))
+// dirColumnWidth caps the launch-directory column so it doesn't crowd out the
+// command; longer paths collapse to their last two segments (see ShortPath).
+const dirColumnWidth = 32
+
+// ForgottenTable renders forgotten process trees as an aligned table with
+// columns PID / AGE / PORTS / PROCS / DIR / COMMAND, in the order supplied.
+// A tree that listens on nothing shows "-" for PORTS, as does an unknown
+// launch directory for DIR.
+func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width int) string {
+	rows := make([][]string, len(trees))
+	for i, t := range trees {
+		ports := formatPorts(t.Ports)
+		if ports == "" {
+			ports = "-"
+		}
+		dir := ShortPath(t.Root.Cwd, home, dirColumnWidth)
+		if dir == "" {
+			dir = "-"
 		}
 		rows[i] = []string{
-			strconv.Itoa(int(p.PID)),
-			user,
-			Age(now, p.Created),
-			p.Name,
-			p.Cmdline,
+			strconv.Itoa(int(t.Root.PID)),
+			Age(now, t.Root.Created),
+			ports,
+			strconv.Itoa(t.Procs),
+			dir,
+			t.Root.Cmdline,
 		}
 	}
-	return Grid([]string{"PID", "USER", "AGE", "NAME", "COMMAND"}, rows, width)
+	return Grid([]string{"PID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
 }
 
 // ListenersTable renders listeners as an aligned table with columns

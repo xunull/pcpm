@@ -1,14 +1,16 @@
-package orphan
+package forgotten
 
 import (
+	"syscall"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// Collect enumerates every process on the host via gopsutil and reduces each to
-// a Process. Entries whose parent or owner can't be read — the process exited
+// Collect enumerates every process on the host, reducing each to a Process.
+// Entries whose parent or process group can't be read — the process exited
 // mid-scan, or we lack permission — are skipped rather than failing the scan.
+// The process group comes from syscall.Getpgid, which gopsutil does not expose.
 func Collect() ([]Process, error) {
 	procs, err := process.Processes()
 	if err != nil {
@@ -20,13 +22,18 @@ func Collect() ([]Process, error) {
 		if err != nil {
 			continue
 		}
-		uids, err := p.Uids()
-		if err != nil || len(uids) == 0 {
+		pgid, err := syscall.Getpgid(int(p.Pid))
+		if err != nil {
 			continue
+		}
+		var uid int32
+		if uids, err := p.Uids(); err == nil && len(uids) > 0 {
+			uid = int32(uids[0])
 		}
 		user, _ := p.Username()
 		name, _ := p.Name()
 		cmdline, _ := p.Cmdline()
+		cwd, _ := p.Cwd()
 
 		var created time.Time
 		if ms, err := p.CreateTime(); err == nil && ms > 0 {
@@ -36,10 +43,12 @@ func Collect() ([]Process, error) {
 		out = append(out, Process{
 			PID:     p.Pid,
 			PPID:    ppid,
-			UID:     int32(uids[0]),
+			PGID:    int32(pgid),
+			UID:     uid,
 			User:    user,
 			Name:    name,
 			Cmdline: cmdline,
+			Cwd:     cwd,
 			Created: created,
 		})
 	}

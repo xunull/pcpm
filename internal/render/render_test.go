@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
-	"github.com/xunull/pcpm/internal/orphan"
 )
 
 func TestAge(t *testing.T) {
@@ -33,57 +33,26 @@ func TestAge(t *testing.T) {
 	}
 }
 
-func TestJSON(t *testing.T) {
-	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	// shell operators lock in both untruncated copy and no HTML-escaping
-	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
-	procs := []orphan.Process{
-		{PID: 10, PPID: 1, UID: 501, User: "quincy", Name: "next-server", Cmdline: longCmd, Created: created},
+func TestShortPath(t *testing.T) {
+	const home = "/Users/me"
+	cases := []struct {
+		name   string
+		path   string
+		maxLen int
+		want   string
+	}{
+		{"home becomes tilde", "/Users/me/proj", 40, "~/proj"},
+		{"non-home path kept", "/opt/homebrew/var", 40, "/opt/homebrew/var"},
+		{"empty path", "", 40, ""},
+		{"long path keeps last two segments", "/Users/me/a/b/c/open-source/ocrserver", 20, "…/open-source/ocrserver"},
+		{"short enough is untouched", "/Users/me/a", 40, "~/a"},
 	}
-
-	out, err := JSON(procs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var got []map[string]any
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
-	}
-	if len(got) != 1 {
-		t.Fatalf("want 1 element, got %d", len(got))
-	}
-	e := got[0]
-
-	// every field present, IDs numeric, strings verbatim, cmdline UNtruncated
-	for _, k := range []string{"pid", "ppid", "uid", "user", "name", "cmdline", "create_time"} {
-		if _, ok := e[k]; !ok {
-			t.Errorf("missing field %q in %v", k, e)
-		}
-	}
-	if e["pid"] != float64(10) || e["ppid"] != float64(1) || e["uid"] != float64(501) {
-		t.Errorf("numeric fields wrong: %v", e)
-	}
-	if e["user"] != "quincy" || e["name"] != "next-server" {
-		t.Errorf("string fields wrong: %v", e)
-	}
-	if e["cmdline"] != longCmd {
-		t.Errorf("cmdline was altered/truncated (len got %d, want %d)", len(e["cmdline"].(string)), len(longCmd))
-	}
-	if !strings.Contains(out, "&&") {
-		t.Errorf("cmdline should not be HTML-escaped (& kept literal for jq); raw:\n%s", out)
-	}
-	if e["create_time"] != "2026-01-02T03:04:05Z" {
-		t.Errorf("create_time = %v, want 2026-01-02T03:04:05Z", e["create_time"])
-	}
-
-	// no candidates -> "[]", not "null"
-	empty, err := JSON(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.TrimSpace(empty) != "[]" {
-		t.Errorf("empty input: want [], got %q", empty)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ShortPath(tc.path, home, tc.maxLen); got != tc.want {
+				t.Errorf("ShortPath(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -114,6 +83,60 @@ func TestGrid(t *testing.T) {
 	}
 	if !strings.Contains(narrow, "…") {
 		t.Errorf("expected an ellipsis in truncated output:\n%s", narrow)
+	}
+}
+
+func TestForgottenJSON(t *testing.T) {
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
+	trees := []forgotten.Tree{{
+		Root: forgotten.Process{
+			PID: 100, PPID: 1, PGID: 900, UID: 501, User: "quincy",
+			Name: "uv", Cmdline: longCmd, Cwd: "/proj", Created: created,
+		},
+		Procs: 3,
+		Ports: []listen.Port{{Number: 8766, Exposed: false}, {Number: 9000, Exposed: true}},
+	}}
+
+	out, err := ForgottenJSON(trees)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 element, got %d", len(got))
+	}
+	e := got[0]
+	for _, k := range []string{"pid", "ppid", "pgid", "uid", "user", "name", "cmdline", "cwd", "create_time", "procs", "ports"} {
+		if _, ok := e[k]; !ok {
+			t.Errorf("missing field %q in %v", k, e)
+		}
+	}
+	if e["cmdline"] != longCmd {
+		t.Errorf("cmdline was altered/truncated")
+	}
+	if !strings.Contains(out, "&&") {
+		t.Errorf("cmdline should not be HTML-escaped; raw:\n%s", out)
+	}
+	if e["cwd"] != "/proj" || e["procs"] != float64(3) {
+		t.Errorf("cwd/procs wrong: %v", e)
+	}
+	ports, ok := e["ports"].([]any)
+	if !ok || len(ports) != 2 {
+		t.Fatalf("ports: want a 2-element array, got %v", e["ports"])
+	}
+	p1 := ports[1].(map[string]any)
+	if p1["port"] != float64(9000) || p1["exposed"] != true {
+		t.Errorf("port[1] = %v, want {port:9000, exposed:true}", p1)
+	}
+
+	empty, err := ForgottenJSON(nil)
+	if err != nil || strings.TrimSpace(empty) != "[]" {
+		t.Errorf("empty input: want [] and no error, got %q err=%v", empty, err)
 	}
 }
 
