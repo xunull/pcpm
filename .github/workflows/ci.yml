@@ -1,0 +1,49 @@
+name: ci
+
+# PR 与 push main 时跑。矩阵覆盖 ubuntu + macos:pcpm 目标平台是 Linux + macOS
+# (ADR-0001),但开发全程在 mac 上进行,syscall.Getpgid、gopsutil 的 Linux 路径
+# 从未在 Linux 上验证过 —— 这条矩阵就是用来关掉这个缺口的。
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 只读:CI 不需要写任何东西(发布权限在 release.yml 里单独给)。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 构建与测试 ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个平台挂了也要看到另一个平台的结果
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod # 版本以 go.mod 为准,不在两处各写一遍
+          cache: true
+
+      - name: 构建
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt 检查
+        # gofmt -l 只列出未格式化的文件、退出码恒为 0,所以要自己判空来让 CI 失败。
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化,请运行 gofmt -w:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 测试
+        # -count=1 关掉测试缓存,确保每次 CI 都真的跑一遍。
+        run: go test ./... -count=1
