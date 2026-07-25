@@ -234,9 +234,13 @@ func Grid(header []string, rows [][]string, width int) string {
 const dirColumnWidth = 32
 
 // ForgottenTable renders forgotten process trees as an aligned table with
-// columns PID / AGE / PORTS / PROCS / DIR / COMMAND, in the order supplied.
-// A tree that listens on nothing shows "-" for PORTS, as does an unknown
-// launch directory for DIR.
+// columns PID / PGID / AGE / PORTS / PROCS / DIR / COMMAND, in the order
+// supplied. A tree that listens on nothing shows "-" for PORTS, as does an
+// unknown launch directory for DIR.
+//
+// PGID is shown because it, not PID, is what cleaning up the whole tree needs
+// (`kill -- -<PGID>`); the two differ, and reaching for PID is the natural
+// mistake.
 func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width int) string {
 	rows := make([][]string, len(trees))
 	for i, t := range trees {
@@ -250,6 +254,7 @@ func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width in
 		}
 		rows[i] = []string{
 			strconv.Itoa(int(t.Root.PID)),
+			strconv.Itoa(int(t.Root.PGID)),
 			Age(now, t.Root.Created),
 			ports,
 			strconv.Itoa(t.Procs),
@@ -257,7 +262,7 @@ func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width in
 			t.Root.Cmdline,
 		}
 	}
-	return Grid([]string{"PID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
+	return Grid([]string{"PID", "PGID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
 }
 
 // ListenersTable renders listeners as an aligned table with columns

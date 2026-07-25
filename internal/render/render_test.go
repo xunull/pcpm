@@ -89,6 +89,46 @@ func TestGrid(t *testing.T) {
 	}
 }
 
+// The table must carry PGID: it is the value `kill -- -<PGID>` needs, and it
+// differs from the root's PID — reaching for PID instead is the natural mistake.
+func TestForgottenTableShowsProcessGroup(t *testing.T) {
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	trees := []forgotten.Tree{{
+		Root: forgotten.Process{
+			PID: 58714, PGID: 58669,
+			Cmdline: "uv run uvicorn", Cwd: "/Users/me/proj",
+			Created: now.Add(-2 * time.Hour),
+		},
+		Procs: 3,
+		Ports: []listen.Port{{Number: 8766}},
+	}}
+
+	out := ForgottenTable(trees, now, "/Users/me", 0)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want header + 1 row, got %d lines:\n%s", len(lines), out)
+	}
+	header, row := lines[0], lines[1]
+
+	if !strings.Contains(header, "PGID") {
+		t.Errorf("header is missing the PGID column:\n%s", header)
+	}
+	if !strings.Contains(row, "58669") {
+		t.Errorf("row does not show the process group 58669:\n%s", row)
+	}
+	// PGID sits next to PID, before the rest
+	iPID, iPGID, iAge := strings.Index(header, "PID"), strings.Index(header, "PGID"), strings.Index(header, "AGE")
+	if !(iPID < iPGID && iPGID < iAge) {
+		t.Errorf("want column order PID, PGID, AGE; got header:\n%s", header)
+	}
+	// the other columns survive
+	for _, want := range []string{"8766", "3", "~/proj", "uv run uvicorn"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("row is missing %q:\n%s", want, row)
+		}
+	}
+}
+
 func TestForgottenJSON(t *testing.T) {
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
