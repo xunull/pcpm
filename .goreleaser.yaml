@@ -1,0 +1,84 @@
+# GoReleaser 配置(见 ADR-0006)。
+#
+# 为何用 GoReleaser 而非兄弟项目 inhomo 那套自研 tools/brewgen:inhomo 的 DuckDB 驱动
+# 带各平台预编译静态库,必须开 CGO 且无法交叉编译,只能用 4 个原生 runner;pcpm 是纯 Go,
+# 四个目标全部可从一台机器交叉编译,正是 GoReleaser 的主场。
+#
+# 本地验证(不发布):goreleaser check && goreleaser release --snapshot --clean
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pcpm
+    main: .
+    binary: pcpm
+    env:
+      - CGO_ENABLED=0 # 纯 Go,关掉 CGO 才能交叉编译并得到静态二进制
+    # 仅 Linux + macOS:Windows 没有进程组模型,核心概念不成立(ADR-0001)。
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}" # 可复现构建:产物时间戳取自 commit
+
+archives:
+  - id: pcpm
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    # 这些不值得出现在发布说明里。
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+# 用 cask 而非 formula:GoReleaser 2.17 已弃用 brews(check 会直接判失败),官方迁移方向是
+# homebrew_casks。Linux 不受影响 —— Homebrew 6.x 起,binary 这类可移植 stanza 在 Linux 上
+# 同样可用(见 Cask-Cookbook),GoReleaser 也会自动生成 on_linux 块。
+# 故 tap 里 pcpm 落在 Casks/,而 inhomo 仍是 Formula/,两者共存互不影响。
+homebrew_casks:
+  - name: pcpm
+    # 推到 xunull/homebrew-tap。仓库自带的 GITHUB_TOKEN 写不了别的仓库,所以必须用对 tap
+    # 有 contents:write 的 PAT(release.yml 里的 TAP_PUSH_TOKEN)。
+    repository:
+      owner: xunull
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.TAP_PUSH_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/xunull/pcpm
+    description: Find processes whose launching job is gone — a dev server an agent started and never stopped
+    license: Apache-2.0
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "pcpm {{ .Tag }}"
+    # 声明下载域与 homepage 同源,便于通过 brew audit。
+    url:
+      verified: github.com/xunull/pcpm
+    # 二进制未签名未公证(v0 不做,与 inhomo 一致)。cask 会给下载物打 com.apple.quarantine,
+    # 不清掉的话首次运行会被 Gatekeeper 拦下,故装完即清。
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/pcpm"]
+          end
+    # 刻意不写 service 块:pcpm 是一次性命令,不是常驻服务(对比 inhomo 有 service)。

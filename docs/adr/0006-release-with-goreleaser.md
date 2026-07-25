@@ -4,6 +4,12 @@ The sibling project `xunull/inhomo` publishes to the same Homebrew tap (`xunull/
 
 **pcpm has none of those constraints.** It is pure Go — verified: it builds with `CGO_ENABLED=0`, and all four targets (`darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`) cross-compile from a single machine. So pcpm releases with **GoReleaser v2**: one runner cross-compiling every target, and GoReleaser's `brews:` section publishing `Formula/pcpm.rb` to the tap — rather than porting inhomo's `brewgen`.
 
+## Published as a cask, not a formula
+
+GoReleaser 2.17 **deprecates `brews:`** — `goreleaser check` fails outright on it — and points at `homebrew_casks:` instead. pcpm therefore lands in the tap as `Casks/pcpm.rb` while inhomo stays a `Formula/`; the two coexist and `brew install xunull/tap/pcpm` works either way.
+
+This costs nothing on Linux, contrary to the old "casks are macOS-only" rule of thumb: since Homebrew 6.x, portable stanzas such as `binary` work on both operating systems (Cask-Cookbook), and GoReleaser emits `on_linux` blocks accordingly. Because casks *do* apply `com.apple.quarantine` to what they download — unlike formulae, which Homebrew fetches with its own curl — and pcpm's binaries are unsigned (v0 does no Apple notarization, matching inhomo), the cask carries a `postflight` hook clearing that attribute.
+
 ## Consequences
 
 - **Two projects in one tap deliberately use different release tooling.** That is a consequence of CGO, not an oversight or drift. Don't "unify" them by moving inhomo to GoReleaser unless its CGO constraint disappears — that is the reason the tooling differs, and it hasn't changed.

@@ -47,3 +47,33 @@ jobs:
       - name: 测试
         # -count=1 关掉测试缓存,确保每次 CI 都真的跑一遍。
         run: go test ./... -count=1
+
+  # 发布配置是声明式的,写错了很难一眼看出,却要等打 tag 才暴露 —— 而那时 tag 已经推出去,
+  # 修起来得删/挪 tag。所以在 PR 阶段就干跑一次:check 校验配置,build --snapshot 真的
+  # 构建四个目标但不发布任何东西。
+  goreleaser:
+    name: 发布配置干跑
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # snapshot 版本号取自 git 描述
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 校验配置
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: 干跑构建(不发布)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean

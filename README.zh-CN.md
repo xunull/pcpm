@@ -64,8 +64,11 @@ pcpm 是**只读**的:它只负责报出来,杀不杀由你决定。
 
 ```bash
 brew tap xunull/tap
+brew trust xunull/tap   # Homebrew 6.x 起:不信任第三方 tap 会拒绝安装
 brew install pcpm
 ```
+
+macOS 与 Linux 都可用 —— pcpm 以 cask 形式分发,用的是可移植的 `binary` stanza。
 
 ### go install
 

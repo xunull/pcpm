@@ -64,8 +64,11 @@ pcpm is **read-only**. It reports; you decide what to kill.
 
 ```bash
 brew tap xunull/tap
+brew trust xunull/tap   # Homebrew 6.x refuses to install from an untrusted third-party tap
 brew install pcpm
 ```
+
+Works on both macOS and Linux — pcpm ships as a cask using the portable `binary` stanza.
 
 ### go install
 
