@@ -109,7 +109,7 @@ pcpm forgotten --fail-on-found            # 找到就以非 0 退出,便于脚�
 
 ### `pcpm ports`(别名 `listen`)
 
-列出你自己拥有、正在监听 TCP 的进程,一行一个。用于反过来问:「8766 端口被谁占着?」
+列出你的**监听者(Listener)** —— 自己拥有、正在监听 TCP 的进程,一行一个。用于反过来问:「8766 端口被谁占着?」
 
 ```bash
 pcpm ports

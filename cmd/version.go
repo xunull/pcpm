@@ -16,7 +16,14 @@ var build = buildinfo.New("", "", "")
 // `pcpm version` and `pcpm --version` report them.
 func SetBuildInfo(version, commit, date string) {
 	build = buildinfo.New(version, commit, date)
+	applyVersion()
+}
+
+// applyVersion points cobra's --version at the same text `pcpm version` prints:
+// two ways of asking the same question should not give different answers.
+func applyVersion() {
 	rootCmd.Version = build.Version
+	rootCmd.SetVersionTemplate(build.String())
 }
 
 var versionCmd = &cobra.Command{
@@ -32,6 +39,6 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.Version = build.Version
+	applyVersion()
 	rootCmd.AddCommand(versionCmd)
 }

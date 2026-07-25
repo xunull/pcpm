@@ -109,7 +109,7 @@ pcpm forgotten --fail-on-found            # exit non-zero if anything was found
 
 ### `pcpm ports` (alias `listen`)
 
-Lists the processes you own that hold a listening TCP socket, one row per process. Useful for the other direction: "what has port 8766?"
+Lists your **listeners** — the processes you own that hold a listening TCP socket — one row per process. Useful for the other direction: "what has port 8766?"
 
 ```bash
 pcpm ports

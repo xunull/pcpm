@@ -9,7 +9,9 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    # 只下载依赖,不用 `go mod tidy` —— 后者会在发布时改写 go.mod/go.sum,
+    # 那样发出去的二进制就不是严格按打 tag 那一刻的清单构建的。
+    - go mod download
 
 builds:
   - id: pcpm
@@ -25,7 +27,10 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
-    mod_timestamp: "{{ .CommitTimestamp }}" # 可复现构建:产物时间戳取自 commit
+    # 归档内文件的 mtime 取自 commit 而非打包时刻,让归档本身稳定。
+    # 注意这不等于「二进制可复现」—— 下面 -X main.date 注入的是真实构建时刻,
+    # 同一个 tag 重跑会得到不同的二进制内容。这是有意的:version 里的 built 就该是构建时间。
+    mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - id: pcpm
@@ -34,6 +39,7 @@ archives:
     files:
       - LICENSE
       - README.md
+      - README.zh-CN.md
 
 checksum:
   name_template: checksums.txt
