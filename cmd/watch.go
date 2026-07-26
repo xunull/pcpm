@@ -89,6 +89,8 @@ func init() {
 	watchDaemonCmd.Flags().Duration("discover-interval", 0,
 		"how often to re-walk the process table for tree members (default: 30s)")
 	watchDaemonCmd.Flags().Bool("quiet", false, "do not report each tick")
+	watchDaemonCmd.Flags().Bool("stop", false, "stop a background collector instead of running one")
+	watchAddCmd.Flags().Bool("no-daemon", false, "do not start the collector if it is not running")
 
 	watchShowCmd.Flags().StringP("output", "o", "table", "output format: table | json")
 	watchShowCmd.Flags().Duration("window", time.Hour, "how far back to report")
@@ -188,10 +190,30 @@ func latestTargetFor(targets []watch.Target, pid int32) (watch.Target, error) {
 }
 
 func runWatchDaemon(cmd *cobra.Command, _ []string) error {
+	if stopFlag, _ := cmd.Flags().GetBool("stop"); stopFlag {
+		stopped, err := watch.StopDaemon(dbPath(cmd))
+		if err != nil {
+			return err
+		}
+		if stopped {
+			fmt.Fprintln(cmd.OutOrStdout(), "asked the collector to stop")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "no collector is running")
+		}
+		return nil
+	}
+
 	cfg, err := config.Load(cmd.Flags(), configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	// One collector per database, or two would write the same ticks.
+	release, err := watch.AcquireDaemonLock(dbPath(cmd))
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	store, err := openStore(cmd)
 	if err != nil {
@@ -265,6 +287,18 @@ func runWatchAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("storing the target: %w", err)
 	}
 
+	// Watching that stops when the terminal closes is not watching, so adding a
+	// target starts the collector unless told not to. It is announced rather
+	// than silent: a background process pcpm started must never become
+	// something the user has forgotten about — which is, after all, the thing
+	// this tool exists to find.
+	started := int32(0)
+	if noDaemon, _ := cmd.Flags().GetBool("no-daemon"); !noDaemon {
+		if started, err = watch.StartDaemon(dbPath(cmd)); err != nil {
+			return fmt.Errorf("starting the collector: %w", err)
+		}
+	}
+
 	out := cmd.OutOrStdout()
 	if format == render.FormatJSON {
 		body, err := render.WatchTargetJSON(watch.Status{Target: added, Running: true})
@@ -275,6 +309,9 @@ func runWatchAdd(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Fprintf(out, "watching %d (%s)\n", added.PID, added.Name)
+	if started > 0 {
+		fmt.Fprintf(out, "started the collector in the background (pid %d); stop it with `pcpm watch daemon --stop`\n", started)
+	}
 	return nil
 }
 
@@ -314,6 +351,9 @@ func runWatchLs(cmd *cobra.Command, _ []string) error {
 	case render.FormatTable:
 		home, _ := os.UserHomeDir()
 		fmt.Fprint(out, render.WatchTargetsTable(statuses, time.Now(), home, terminalWidth(out)))
+		// A background process pcpm started must not become something the user
+		// has forgotten about, so its state is reported where the targets are.
+		fmt.Fprint(out, render.DaemonLine(store.Daemon(dbPath(cmd)), time.Now()))
 	default:
 		return fmt.Errorf("unhandled output format %v", format)
 	}
@@ -362,15 +402,23 @@ func parsePID(s string) (int32, error) {
 	return int32(n), nil
 }
 
+// dbPath resolves where pcpm's database lives, honouring --db. It returns ""
+// when there is no home directory to place it under.
+func dbPath(cmd *cobra.Command) string {
+	if path, _ := cmd.Flags().GetString("db"); path != "" {
+		return path
+	}
+	if dir := config.StateDir(); dir != "" {
+		return filepath.Join(dir, "pcpm.db")
+	}
+	return ""
+}
+
 // openStore opens pcpm's database, honouring --db.
 func openStore(cmd *cobra.Command) (*watch.Store, error) {
-	path, _ := cmd.Flags().GetString("db")
+	path := dbPath(cmd)
 	if path == "" {
-		dir := config.StateDir()
-		if dir == "" {
-			return nil, errors.New("no home directory found, so pcpm cannot place its database; pass --db")
-		}
-		path = filepath.Join(dir, "pcpm.db")
+		return nil, errors.New("no home directory found, so pcpm cannot place its database; pass --db")
 	}
 	return watch.Open(path)
 }

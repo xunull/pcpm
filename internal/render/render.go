@@ -419,6 +419,21 @@ func WatchTargetsTable(statuses []watch.Status, now time.Time, home string, widt
 	return Grid([]string{"PID", "WATCHING", "PROCESS", "ADDED", "DIR", "COMMAND"}, rows, width)
 }
 
+// DaemonLine reports the collector's state as a single line beneath the target
+// list. A stopped collector is the reason a target's history goes quiet, so it
+// is worth saying plainly rather than leaving the user to infer it from a chart
+// that stopped moving.
+func DaemonLine(d watch.DaemonState, now time.Time) string {
+	if !d.Running {
+		return "\ncollector: not running — start it with `pcpm watch daemon`\n"
+	}
+	if d.LastTick.IsZero() {
+		return fmt.Sprintf("\ncollector: running (pid %d), nothing collected yet\n", d.PID)
+	}
+	return fmt.Sprintf("\ncollector: running (pid %d), last collected %s ago\n",
+		d.PID, Age(now, d.LastTick))
+}
+
 func yesNo(b bool) string {
 	if b {
 		return "yes"
