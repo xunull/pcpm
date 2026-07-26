@@ -127,34 +127,34 @@ pcpm watch rm 68283      # stop watching; the history is kept
 `pcpm watch show` opens a view that refreshes on its own:
 
 ```
-100 · bun · running · ~/proj
+68283 · bun · running · ~/proj
 
-  70% ┤                                         ╶─────────────────────────────────────────
-  60% ┤
-  50% ┤
-  40% ┤
-  30% ┤
-  20% ┤
-  10% ┤
- 0.0% ┤
-      └┬────────────────┬───────────────┬────────────────┬───────────────┬────────────────┬
-     19:00            19:12           19:24            19:36           19:48            20:00
-                                  cpu — now 70%, peak 70%
+CPU   now 0.8%   peak 94%   ·   whole tree, 2 processes
+100% │                                        ⠂⣶⣶⣶⣶⠐
+     │                                        ⢸⣿⣿⣿⣿⡇
+     │    ⠁                    ⠁         ⠈    ⢸⣿⣿⣿⣿⡇⠁         ⠈          ⠁
+     │    ⡀        ⠁⣿⠁         ⡀         ⢠    ⣿⣿⣿⣿⣿⡇⡄         ⢠          ⡄
+0.0% │⣀⣀⣀⣀⣇⣀⣀⣀⣀⣀⣀⣀⣀⣿⣿⣇⣀⣀⣀⣀⣀⣀⣀⣀⣀⣇⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸⣀⣀⣀⣀⣿⣿⣿⣿⣿⣿⣇⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣇⣀⣀⣀⣀
+     └────────────────────────────────────────────────────────────────────────
+     19:00                            19:30                             20:00
 
- 310 MB ┤                                         ╶─────────────────────────────────────────
- 266 MB ┤
- 221 MB ┤
-   0  B ┤
-        └┬────────────────┬───────────────┬────────────────┬───────────────┬────────────────┬
-       19:00            19:12           19:24            19:36           19:48            20:00
-                                memory — now 310 MB, peak 310 MB
+MEMORY   now 1.0 GB   peak 1.0 GB
+1.3 GB │
+       │                                                            ⣀⣀⣠⣤⣤⣴⣶⣶⣿⣿
+       │                                               ⣀⣀⣀⣤⣤⣤⣴⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+       │                             ⢀⣀⣀⣀⣀⣠⣤⣤⣤⣤⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+   0 B │⣀⣀⣀⣀⣀⣀⣀⣤⣤⣤⣤⣤⣤⣤⣤⣤⣴⣶⣶⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+       └──────────────────────────────────────────────────────────────────────
+       19:00                           19:30                            20:00
 
-   PID  NAME     CPU   RSS
-▸  101  esbuild  70%   280 MB
-   100  bun      0.0%  30 MB
+   PID    NAME     CPU   RSS
+   68290  esbuild  9.3%  1.0 GB
+   68283  bun      0.0%  30 MB
 
 [1]5m  [2]1h* [3]24h  [4]7d    [tab]process [r]refresh [q]quit
 ```
+
+Two things that chart says at a glance. **CPU is idle almost all the time, with brief bursts** — something is still calling this server, which is exactly what decides whether it is safe to kill. And **memory climbs steadily and never comes back down**, which is what a leak looks like.
 
 Note the process list: **`bun`, the process you named, is using 0.0%** — the work is being done by `esbuild` underneath it. That is the normal shape. The command you recognise is usually a wrapper, so watching only the PID you typed would report an idle process while the tree pegs a core. pcpm measures every process in the tree and shows which one is responsible.
 
@@ -162,11 +162,12 @@ Piped or redirected output prints a text summary instead of control codes; `--pl
 
 ### Reading the charts
 
-- **Time windows are fixed** — `5m`, `1h`, `24h`, `7d`. There is no zoom or pan, which is why the charts label a value on every row: reading the current number at a glance is what the view is for.
-- **A break in the line means no data was collected** — the machine was asleep, or the collector was not running. It is deliberately not drawn through: a straight line there would claim the value held steady when nothing at all is known about it.
-- **CPU can exceed 100%.** It is a tree, and 100% means one core.
-- **CPU turns red above 80%.**
-- **`tab` walks the process list.** With a process selected, its own line is drawn against the tree's total, which is how you tell a busy wrapper from a busy worker. `tab` past the end returns to the tree alone.
+- **The filled area is the average, and the dots above it are the peak.** A column in the 7-day view covers hours. Averaging alone would erase a three-second request inside an idle hour — and that request is the evidence that something still uses this process. The cap keeps it.
+- **A gap in the fill means nothing was collected** — the machine was asleep, or the collector was not running. An idle period is different: it still draws a baseline along the bottom. The two must not look the same, or a stopped collector passes for a quiet process.
+- **The CPU axis is in whole cores**, so height means something: half way up a `100%` chart is half a core, and a busy tree gets a `200%` axis rather than being clipped.
+- **Colour follows height, not time.** Red near the top of the CPU chart means near a full core. The memory chart is a single colour: its scale is fitted to its own data, so "high" there would not mean anything.
+- **`tab` walks the process list.** With a process selected the charts show that process alone, which is how you tell a busy wrapper from a busy worker. `tab` past the end returns to the whole tree.
+- **Time windows are fixed** — `5m`, `1h`, `24h`, `7d`. There is no zoom or pan.
 
 ### What is stored, and for how long
 
