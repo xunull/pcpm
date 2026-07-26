@@ -7,9 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+
+	"github.com/xunull/pcpm/internal/watch"
 )
 
 // Config is the resolved configuration pcpm's commands run against.
@@ -18,6 +21,27 @@ type Config struct {
 	// suppressed from output — how a user silences a long-running job they
 	// keep on purpose.
 	Ignore []string
+
+	// Watch is the collector's schedule.
+	Watch WatchConfig
+}
+
+// WatchConfig is how often the collector works. Raising SampleInterval trades
+// resolution for storage; lowering DiscoverInterval catches shorter-lived child
+// processes at the cost of walking the whole process table more often.
+type WatchConfig struct {
+	SampleInterval   time.Duration
+	DiscoverInterval time.Duration
+
+	// MaintenanceInterval is how often to roll up settled Samples and drop what
+	// has aged out. RawRetention and RollupRetention are how long each
+	// resolution is kept: raw Samples answer "what exactly happened yesterday
+	// afternoon", rollups answer "has this been creeping up for a fortnight" at
+	// a fraction of the rows.
+	MaintenanceInterval time.Duration
+	RollupInterval      time.Duration
+	RawRetention        time.Duration
+	RollupRetention     time.Duration
 }
 
 // Load resolves configuration with precedence flag > env (PCPM_*) > config file
@@ -29,6 +53,14 @@ type Config struct {
 func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v := viper.New()
 	v.SetDefault("ignore", []string{})
+	// The collector's defaults live with the collector, so config and code
+	// cannot drift apart on what "the default" is.
+	v.SetDefault("watch.sample_interval", watch.DefaultSampleInterval)
+	v.SetDefault("watch.discover_interval", watch.DefaultDiscoverInterval)
+	v.SetDefault("watch.maintenance_interval", watch.DefaultMaintenanceInterval)
+	v.SetDefault("watch.rollup_interval", watch.DefaultRollupInterval)
+	v.SetDefault("watch.raw_retention", watch.DefaultRawRetention)
+	v.SetDefault("watch.rollup_retention", watch.DefaultRollupRetention)
 
 	v.SetEnvPrefix("PCPM")
 	v.AutomaticEnv()
@@ -55,19 +87,43 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 		flagIgnore, _ := flags.GetStringArray("ignore")
 		ignore = append(ignore, flagIgnore...)
 	}
-	return Config{Ignore: ignore}, nil
+	return Config{
+		Ignore: ignore,
+		Watch: WatchConfig{
+			SampleInterval:      v.GetDuration("watch.sample_interval"),
+			DiscoverInterval:    v.GetDuration("watch.discover_interval"),
+			MaintenanceInterval: v.GetDuration("watch.maintenance_interval"),
+			RollupInterval:      v.GetDuration("watch.rollup_interval"),
+			RawRetention:        v.GetDuration("watch.raw_retention"),
+			RollupRetention:     v.GetDuration("watch.rollup_retention"),
+		},
+	}, nil
 }
 
 // DefaultDir is the per-user directory pcpm searches for config.yaml:
 // $XDG_CONFIG_HOME/pcpm, or ~/.config/pcpm when XDG_CONFIG_HOME is unset.
 // It returns "" when no home directory is known.
 func DefaultDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+	return userDir("XDG_CONFIG_HOME", ".config")
+}
+
+// StateDir is the per-user directory pcpm keeps data it generates in — as
+// opposed to configuration the user writes: $XDG_STATE_HOME/pcpm, or
+// ~/.local/state/pcpm when XDG_STATE_HOME is unset. It returns "" when no home
+// directory is known.
+func StateDir() string {
+	return userDir("XDG_STATE_HOME", ".local", "state")
+}
+
+// userDir resolves an XDG directory: the named environment variable when set,
+// otherwise the fallback path relative to the home directory.
+func userDir(env string, fallback ...string) string {
+	if x := os.Getenv(env); x != "" {
 		return filepath.Join(x, "pcpm")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "pcpm")
+	return filepath.Join(append(append([]string{home}, fallback...), "pcpm")...)
 }

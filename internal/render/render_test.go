@@ -8,6 +8,8 @@ import (
 
 	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
+	"github.com/xunull/pcpm/internal/watch"
 )
 
 func TestAge(t *testing.T) {
@@ -94,7 +96,7 @@ func TestGrid(t *testing.T) {
 func TestForgottenTableShowsProcessGroup(t *testing.T) {
 	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
 	trees := []forgotten.Tree{{
-		Root: forgotten.Process{
+		Root: proc.Process{
 			PID: 58714, PGID: 58669,
 			Cmdline: "uv run uvicorn", Cwd: "/Users/me/proj",
 			Created: now.Add(-2 * time.Hour),
@@ -133,7 +135,7 @@ func TestForgottenJSON(t *testing.T) {
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
 	trees := []forgotten.Tree{{
-		Root: forgotten.Process{
+		Root: proc.Process{
 			PID: 100, PPID: 1, PGID: 900, UID: 501, User: "quincy",
 			Name: "uv", Cmdline: longCmd, Cwd: "/proj", Created: created,
 		},
@@ -238,5 +240,135 @@ func TestParseFormat(t *testing.T) {
 	}
 	if _, err := ParseFormat("yaml"); err == nil {
 		t.Error("ParseFormat(\"yaml\"): want error, got nil")
+	}
+}
+
+func TestWatchTargetsTableSeparatesWatchingFromRunning(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	stopped := now.Add(-time.Hour)
+	statuses := []watch.Status{
+		// still watched, process alive
+		{Target: watch.Target{PID: 100, Name: "bun", Cmdline: "bun run dev", Cwd: "/proj", AddedAt: now.Add(-2 * time.Hour)}, Running: true},
+		// still watched, but the process died — the row must stay
+		{Target: watch.Target{PID: 200, Name: "uv", Cmdline: "uv run app", Cwd: "/other", AddedAt: now.Add(-3 * time.Hour)}, Running: false},
+		// user stopped watching something that is still running
+		{Target: watch.Target{PID: 300, Name: "node", Cmdline: "node s.js", Cwd: "/x", AddedAt: now.Add(-4 * time.Hour), StoppedAt: &stopped}, Running: true},
+	}
+
+	out := WatchTargetsTable(statuses, now, "", 200)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+
+	if len(lines) != 4 {
+		t.Fatalf("want a header plus 3 rows, got %d lines:\n%s", len(lines), out)
+	}
+	for _, col := range []string{"PID", "WATCHING", "PROCESS", "ADDED", "DIR", "COMMAND"} {
+		if !strings.Contains(lines[0], col) {
+			t.Errorf("header is missing %q:\n%s", col, lines[0])
+		}
+	}
+	// The two facts are independent: every combination must be representable.
+	for i, want := range [][2]string{{"yes", "running"}, {"yes", "gone"}, {"no", "running"}} {
+		fields := strings.Fields(lines[i+1])
+		if fields[1] != want[0] || fields[2] != want[1] {
+			t.Errorf("row %d: watching/process = %s/%s, want %s/%s", i+1, fields[1], fields[2], want[0], want[1])
+		}
+	}
+}
+
+func TestWatchTargetsJSON(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	stopped := now.Add(-time.Hour)
+
+	empty, err := WatchTargetsJSON(nil)
+	if err != nil {
+		t.Fatalf("WatchTargetsJSON(nil): %v", err)
+	}
+	if strings.TrimSpace(empty) != "[]" {
+		t.Errorf("no targets should render [] not null, got %q", strings.TrimSpace(empty))
+	}
+
+	out, err := WatchTargetsJSON([]watch.Status{
+		{Target: watch.Target{PID: 100, Name: "bun", Created: now.Add(-9 * time.Hour), AddedAt: now.Add(-2 * time.Hour)}, Running: true},
+		{Target: watch.Target{PID: 200, Name: "uv", Created: now.Add(-9 * time.Hour), AddedAt: now.Add(-3 * time.Hour), StoppedAt: &stopped}},
+	})
+	if err != nil {
+		t.Fatalf("WatchTargetsJSON: %v", err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if got[0]["watching"] != true || got[0]["running"] != true {
+		t.Errorf("first target: want watching+running true, got %v", got[0])
+	}
+	if got[0]["stopped_at"] != nil {
+		t.Errorf("a watched target should have stopped_at null, got %v", got[0]["stopped_at"])
+	}
+	if got[1]["watching"] != false || got[1]["stopped_at"] == nil {
+		t.Errorf("second target: want watching false with a stopped_at, got %v", got[1])
+	}
+	// create_time is the disambiguator for PID reuse, so it must be exported
+	if got[0]["created_at"] == "" || got[0]["created_at"] == nil {
+		t.Error("created_at is missing; it is what distinguishes a reused PID")
+	}
+}
+
+// Piped output reports a width of 0, which by convention means "do not
+// truncate". Passing it straight to truncate blanks the value instead — which
+// is how the command line vanished from the summary's first line.
+func TestWatchSummaryTextKeepsTheCommandWhenNotATerminal(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	s := watch.Status{
+		Target:  watch.Target{PID: 100, Name: "bun", Cmdline: "bun run dev --port 3000", Cwd: "/proj", AddedAt: now.Add(-time.Hour)},
+		Running: true,
+	}
+	sum := watch.Summary{
+		Samples: 12, First: now.Add(-time.Minute), Last: now,
+		CurrentCPUPercent: 20, PeakCPUPercent: 80,
+		CurrentRSSBytes: 300 << 20, PeakRSSBytes: 400 << 20,
+		Processes: []watch.ProcessUsage{{PID: 100, Name: "bun", CPUPercent: 20, RSSBytes: 300 << 20}},
+	}
+
+	out := WatchSummaryText(s, sum, time.Hour, now, "", 0)
+	if !strings.Contains(out, "bun run dev --port 3000") {
+		t.Errorf("the command line is missing from the report:\n%s", out)
+	}
+	for _, want := range []string{"watching", "running", "peak", "PID", "NAME", "CPU", "RSS"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Asking about a target the collector never reached should say so, rather than
+// reporting a confident zero.
+func TestWatchSummaryTextSaysWhenThereAreNoSamples(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	s := watch.Status{Target: watch.Target{PID: 100, Cmdline: "bun run dev", AddedAt: now}, Running: true}
+
+	out := WatchSummaryText(s, watch.Summary{}, time.Hour, now, "", 0)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("want the report to say there is nothing to show:\n%s", out)
+	}
+	if !strings.Contains(out, "watch daemon") {
+		t.Errorf("want a pointer at the likely cause (the collector is not running):\n%s", out)
+	}
+}
+
+func TestBytes(t *testing.T) {
+	for _, tc := range []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1536, "1.5 KB"},
+		{300 << 20, "300 MB"},
+		{3 << 30, "3.0 GB"},
+	} {
+		if got := Bytes(tc.in); got != tc.want {
+			t.Errorf("Bytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

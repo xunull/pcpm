@@ -257,7 +257,7 @@ pgid, err := syscall.Getpgid(pid)
 
 **注意最后一行**:pcpm 其余进程信息全部走 `gopsutil`(`Ppid()`、`Uids()`、`Name()`、`Cmdline()`、`Cwd()`、`CreateTime()`),但**它没有 `Pgid()` 方法**。而 PGID 恰恰是整个判据的命脉,所以这一项必须单独取。
 
-最终实现(`internal/forgotten/collect.go`):
+最终实现(`internal/proc/collect.go`):
 
 ```go
 import (

@@ -1,4 +1,4 @@
-package forgotten
+package proc
 
 import (
 	"syscall"

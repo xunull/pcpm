@@ -1,17 +1,20 @@
 package forgotten
 
 import (
+	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
 )
 
 // procs models a machine with two forgotten trees plus the things that must NOT
 // be flagged: a self-leading daemon, a helper whose parent shares its dead
 // group, a system daemon, a GUI app helper, and a shell.
-func procs(base time.Time) []Process {
-	return []Process{
+func procs(base time.Time) []proc.Process {
+	return []proc.Process{
 		{PID: 1, PPID: 0, PGID: 1, Cmdline: "/sbin/launchd"},
 
 		// forgotten root: group 900's leader is gone, parent (launchd) is in group 1
@@ -82,7 +85,7 @@ func TestDetect(t *testing.T) {
 // tree rather than as a second finding, or its processes are counted twice.
 func TestDetectDoesNotNestRoots(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	nested := []Process{
+	nested := []proc.Process{
 		{PID: 1, PPID: 0, PGID: 1, Cmdline: "/sbin/launchd"},
 		{PID: 100, PPID: 1, PGID: 900, Name: "outer", Cmdline: "outer serve", Created: base},
 		{PID: 101, PPID: 100, PGID: 910, Name: "inner", Cmdline: "inner worker", Created: base},
@@ -104,9 +107,9 @@ func TestDetectDoesNotNestRoots(t *testing.T) {
 
 func TestApplyIgnore(t *testing.T) {
 	trees := []Tree{
-		{Root: Process{PID: 1, Name: "uv"}},
-		{Root: Process{PID: 2, Name: "gbrain"}},
-		{Root: Process{PID: 3, Name: "some.helper"}},
+		{Root: proc.Process{PID: 1, Name: "uv"}},
+		{Root: proc.Process{PID: 2, Name: "gbrain"}},
+		{Root: proc.Process{PID: 3, Name: "some.helper"}},
 	}
 
 	// exact name and glob both drop; order of the rest is kept
@@ -149,6 +152,52 @@ func TestDetectExcludes(t *testing.T) {
 	} {
 		if flagged[tc.pid] {
 			t.Errorf("pid %d (%s) should not be reported as forgotten", tc.pid, tc.why)
+		}
+	}
+}
+
+// A process that detaches the way pcpm's own collector does — its own session,
+// its own process group, re-parented to init — must not be reported. This runs
+// against a real process and the real machine rather than a hand-built
+// snapshot, because that is the claim: pcpm does not flag its own daemon.
+func TestADetachedDaemonIsNotReported(t *testing.T) {
+	daemon := exec.Command("/bin/sleep", "30")
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("starting a detached process: %v", err)
+	}
+	pid := int32(daemon.Process.Pid)
+	defer func() {
+		syscall.Kill(int(pid), syscall.SIGKILL)
+		daemon.Wait()
+	}()
+
+	// It must genuinely be in the shape being tested, or the test proves nothing.
+	pgid, err := syscall.Getpgid(int(pid))
+	if err != nil {
+		t.Fatalf("Getpgid: %v", err)
+	}
+	if int32(pgid) != pid {
+		t.Fatalf("the test process did not lead its own group (%d vs %d)", pgid, pid)
+	}
+
+	procs, err := proc.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	found := false
+	for _, p := range procs {
+		if p.PID == pid {
+			found = true
+		}
+	}
+	if !found {
+		t.Skip("the process was not in the snapshot; nothing to assert")
+	}
+
+	for _, tree := range Detect(procs, nil) {
+		if tree.Root.PID == pid {
+			t.Errorf("a process leading its own group was reported as forgotten (pid %d)", pid)
 		}
 	}
 }

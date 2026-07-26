@@ -1,6 +1,6 @@
-// Package listen holds the domain logic for pcpm's primary lens: the current
-// user's processes that hold a listening TCP socket (see CONTEXT.md, term
-// "Listener", and docs/adr/0004).
+// Package listen holds the domain logic behind `pcpm ports`: the current user's
+// processes that hold a listening TCP socket (see CONTEXT.md, term "Listener",
+// and docs/adr/0004).
 package listen
 
 import (

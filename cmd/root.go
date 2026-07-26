@@ -15,10 +15,11 @@ var configPath string
 
 var rootCmd = &cobra.Command{
 	Use:   "pcpm",
-	Short: "Find processes nothing is looking after any more",
-	Long: "pcpm finds forgotten processes — the surviving roots of jobs nobody cleaned up, " +
-		"such as a dev server an AI coding agent or terminal started and never stopped — " +
-		"and shows what is listening on your TCP ports.",
+	Short: "Make sense of the processes on your own machine",
+	Long: "pcpm (PC Process Manage) is a toolbox for the processes on your own machine. " +
+		"It finds forgotten ones — the surviving roots of jobs nobody cleaned up, such as a " +
+		"dev server an AI coding agent or terminal started and never stopped — shows what is " +
+		"listening on your TCP ports, and watches what a process and its tree consume over time.",
 	SilenceUsage: true,
 	// main owns error reporting (and the ErrForgottenFound signal), so cobra
 	// should not also print errors.
@@ -47,4 +48,12 @@ func terminalWidth(w io.Writer) int {
 		return 0
 	}
 	return width
+}
+
+// isTerminal reports whether w is a terminal. An interactive view has nowhere
+// to draw when output is piped or redirected, so commands fall back to plain
+// text rather than emitting control codes into a file.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }
