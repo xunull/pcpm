@@ -18,27 +18,37 @@ import (
 
 // Window is one of the fixed spans the view can show.
 type Window struct {
-	Key    string
-	Label  string
-	Span   time.Duration
-	Bucket time.Duration
+	Key   string
+	Label string
+	Span  time.Duration
 }
 
 // Windows are the spans offered, from "what is it doing right now" to "has this
 // been creeping up all week".
 var Windows = []Window{
-	{Key: "1", Label: "5m", Span: 5 * time.Minute, Bucket: 5 * time.Second},
-	{Key: "2", Label: "1h", Span: time.Hour, Bucket: 30 * time.Second},
-	{Key: "3", Label: "24h", Span: 24 * time.Hour, Bucket: 10 * time.Minute},
-	{Key: "4", Label: "7d", Span: 7 * 24 * time.Hour, Bucket: time.Hour},
+	{Key: "1", Label: "5m", Span: 5 * time.Minute},
+	{Key: "2", Label: "1h", Span: time.Hour},
+	{Key: "3", Label: "24h", Span: 24 * time.Hour},
+	{Key: "4", Label: "7d", Span: 7 * 24 * time.Hour},
+}
+
+// bucketFor sizes a query's buckets to the chart rather than to a constant.
+//
+// A braille character holds two time steps, so a chart wants exactly one bucket
+// per half-column. Choosing the bucket independently is what leaves gaps in the
+// fill: sixty points spread across a hundred and eighty slots is two thirds
+// empty, and empty means "nothing was collected".
+func bucketFor(span time.Duration, width int) time.Duration {
+	slots := max(width*2, 2)
+	if b := span / time.Duration(slots); b > time.Second {
+		return b
+	}
+	return time.Second
 }
 
 // refreshInterval is how often the view re-queries. The collector samples every
 // five seconds by default, so anything faster only redraws the same numbers.
 const refreshInterval = 5 * time.Second
-
-// warnCPUPercent is where the CPU line turns red: roughly one core saturated.
-const warnCPUPercent = 80
 
 // Source is where the view gets its data. It is an interface so the model can
 // be exercised without a database.
@@ -121,23 +131,24 @@ func (m Model) load() tea.Cmd {
 	w := Windows[m.window]
 	to := m.now()
 	from := to.Add(-w.Span)
+	bucket := bucketFor(w.Span, m.chartWidth())
 	pid := m.selectedPID
 	return func() tea.Msg {
 		status, err := m.source.Status()
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-		points, err := m.source.Series(from, to, w.Bucket)
+		points, err := m.source.Series(from, to, bucket)
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-		summary, err := m.source.Summary(from, to, w.Bucket)
+		summary, err := m.source.Summary(from, to, bucket)
 		if err != nil {
 			return loadedMsg{err: err}
 		}
 		var selected []watch.Point
 		if pid != 0 {
-			if selected, err = m.source.SeriesOfProcess(pid, from, to, w.Bucket); err != nil {
+			if selected, err = m.source.SeriesOfProcess(pid, from, to, bucket); err != nil {
 				return loadedMsg{err: err}
 			}
 		}
@@ -148,7 +159,13 @@ func (m Model) load() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		resized := msg.Width != m.width
 		m.width, m.height = msg.Width, msg.Height
+		if resized && m.loaded {
+			// The bucket is derived from the width, so a resize needs new data
+			// rather than the old points stretched over a new grid.
+			return m, m.load()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -205,21 +222,28 @@ func (m Model) View() string {
 	w := Windows[m.window]
 	to := m.now()
 	from := to.Add(-w.Span)
-	chartWidth := max(m.width-12, 20)
+	chartWidth := m.chartWidth()
 	chartHeight := m.chartHeight()
 
-	b.WriteString(render.Chart(m.points, render.CPUValue, render.ChartOptions{
+	points := m.points
+	if m.selectedLine != nil {
+		// A selected process replaces the tree on the chart rather than being
+		// overlaid on it: two filled areas on top of each other are a mess, and
+		// the number that matters is already in the title.
+		points = m.selectedLine
+	}
+	b.WriteString(render.Chart(points, render.CPUSeries, render.ChartOptions{
 		Width: chartWidth, Height: chartHeight, From: from, To: to,
-		Caption:   m.cpuCaption(),
-		Label:     render.Percent,
-		WarnAbove: warnCPUPercent,
-		Overlay:   m.selectedLine,
+		Title:   m.cpuTitle(),
+		Label:   render.Percent,
+		Ceiling: render.WholeCores,
 	}))
 	b.WriteString("\n")
-	b.WriteString(render.Chart(m.points, render.RSSValue, render.ChartOptions{
+	b.WriteString(render.Chart(points, render.RSSSeries, render.ChartOptions{
 		Width: chartWidth, Height: chartHeight, From: from, To: to,
-		Caption: fmt.Sprintf("memory — now %s, peak %s", render.Bytes(m.summary.CurrentRSSBytes), render.Bytes(m.summary.PeakRSSBytes)),
-		Label:   func(v float64) string { return render.Bytes(int64(v)) },
+		Title: fmt.Sprintf("MEMORY   now %s   peak %s", render.Bytes(m.summary.CurrentRSSBytes), render.Bytes(m.summary.PeakRSSBytes)),
+		Label: func(v float64) string { return render.Bytes(int64(v)) },
+		Flat:  true,
 	}))
 	b.WriteString("\n")
 	b.WriteString(m.processes())
@@ -230,14 +254,16 @@ func (m Model) View() string {
 
 // cpuCaption says what the chart is showing, including which process the second
 // line belongs to when one is selected.
-func (m Model) cpuCaption() string {
-	base := fmt.Sprintf("cpu — now %s, peak %s",
-		render.Percent(m.summary.CurrentCPUPercent), render.Percent(m.summary.PeakCPUPercent))
+func (m Model) cpuTitle() string {
+	what := fmt.Sprintf("whole tree, %d processes", len(m.summary.Processes))
 	if m.selected >= 0 && m.selected < len(m.summary.Processes) {
 		p := m.summary.Processes[m.selected]
-		return fmt.Sprintf("%s   ·   tree total, and %s (%d) alone", base, p.Name, p.PID)
+		what = fmt.Sprintf("%s (%d) only", p.Name, p.PID)
+		return fmt.Sprintf("CPU   now %s   peak %s   ·   %s",
+			render.Percent(p.CPUPercent), render.Percent(p.CPUPercent), what)
 	}
-	return base
+	return fmt.Sprintf("CPU   now %s   peak %s   ·   %s",
+		render.Percent(m.summary.CurrentCPUPercent), render.Percent(m.summary.PeakCPUPercent), what)
 }
 
 // selectNext moves the selection through the process list, wrapping back to
@@ -345,10 +371,13 @@ func (m Model) hasGap() bool {
 	return false
 }
 
+// chartWidth is how wide a chart may be drawn.
+func (m Model) chartWidth() int { return max(m.width, 24) }
+
 // chartHeight divides what is left after the fixed furniture between the two
 // charts, so a short terminal still shows both.
 func (m Model) chartHeight() int {
-	const furniture = 12 // header, captions, axes, process header, footer
+	const furniture = 14 // header, titles, axes, time labels, process list header, footer
 	h := (m.height - furniture - m.processRows()) / 2
 	return max(min(h, 14), 3)
 }

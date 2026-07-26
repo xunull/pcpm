@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 5
+const schemaVersion = 7
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -83,6 +83,15 @@ var migrations = []string{
 		key   TEXT    PRIMARY KEY,
 		value INTEGER NOT NULL
 	) WITHOUT ROWID`,
+
+	// 5 -> 6: the peak within each summarised bucket.
+	//
+	// Without it a burst is averaged away at the minute boundary before any
+	// longer window sees it, so a three-second request inside an idle hour
+	// becomes invisible — and "is anything still using this" is the question
+	// the whole tool is for (ADR-0010).
+	`ALTER TABLE rollup ADD COLUMN cpu_max REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE rollup ADD COLUMN rss_max INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a

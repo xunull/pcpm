@@ -77,12 +77,14 @@ func (s *Store) rollupRange(from, cutoff time.Time, bucket time.Duration) (int, 
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO rollup (target_id, at, bucket_ms, pid, name, cpu_seconds, rss_bytes, span_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO rollup (target_id, at, bucket_ms, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (target_id, at, bucket_ms, pid) DO UPDATE SET
 		   cpu_seconds = excluded.cpu_seconds,
 		   rss_bytes   = excluded.rss_bytes,
 		   span_ms     = excluded.span_ms,
+		   cpu_max     = excluded.cpu_max,
+		   rss_max     = excluded.rss_max,
 		   name        = excluded.name`)
 	if err != nil {
 		return 0, err
@@ -99,7 +101,8 @@ func (s *Store) rollupRange(from, cutoff time.Time, bucket time.Duration) (int, 
 		}
 		for _, agg := range aggregate(cpuDeltas(samples), from, cutoff, bucket) {
 			if _, err := stmt.Exec(t.ID, agg.at.UnixMilli(), bucket.Milliseconds(),
-				agg.pid, agg.name, agg.cpuSeconds, agg.rssBytes, agg.span.Milliseconds()); err != nil {
+				agg.pid, agg.name, agg.cpuSeconds, agg.rssBytes, agg.span.Milliseconds(),
+				agg.peak, agg.peakRSS); err != nil {
 				return 0, err
 			}
 			written++
@@ -129,6 +132,10 @@ type bucketed struct {
 	cpuSeconds float64
 	rssBytes   int64
 	span       time.Duration
+	// peak is the highest rate any interval inside this bucket reached. It is
+	// stored because the mean alone cannot be un-averaged later.
+	peak    float64
+	peakRSS int64
 }
 
 // aggregate folds per-interval deltas into per-bucket totals, one process at a
@@ -153,6 +160,10 @@ func aggregate(deltas []delta, from, to time.Time, bucket time.Duration) []bucke
 		b.cpuSeconds += d.cpuSeconds
 		b.span += d.span
 		b.rssBytes = d.rss // the bucket's latest sample
+		if d.span > 0 {
+			b.peak = max(b.peak, d.cpuSeconds/d.span.Seconds()*100)
+		}
+		b.peakRSS = max(b.peakRSS, d.rss)
 	}
 
 	out := make([]bucketed, 0, len(acc))
@@ -179,12 +190,12 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 	acc := map[bucketKey]*share{}
 	for rows.Next() {
 		var (
-			atMS, spanMS, rss int64
-			pid               int32
-			name              string
-			cpuSeconds        float64
+			atMS, spanMS, rss, rssMax int64
+			pid                       int32
+			name                      string
+			cpuSeconds, cpuMax        float64
 		)
-		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS); err != nil {
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax); err != nil {
 			return nil, err
 		}
 		key := bucketKey{at: atMS / bucket.Milliseconds(), pid: pid}
@@ -196,6 +207,9 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 		sh.cpuSeconds += cpuSeconds
 		sh.span += time.Duration(spanMS) * time.Millisecond
 		sh.rss = rss
+		// Peaks survive re-aggregation by being carried, never averaged.
+		sh.peak = max(sh.peak, cpuMax)
+		sh.peakRSS = max(sh.peakRSS, rssMax)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -210,7 +224,7 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 // period once per resolution.
 func (s *Store) rolledRows(targetID int64, from, to time.Time) (*sql.Rows, error) {
 	return s.db.Query(
-		`SELECT at, pid, name, cpu_seconds, rss_bytes, span_ms
+		`SELECT at, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max
 		 FROM rollup
 		 WHERE target_id = ? AND bucket_ms = ? AND at >= ? AND at < ?
 		 ORDER BY at`,
@@ -235,14 +249,15 @@ func (s *Store) rolledBreakdown(targetID int64, from, to time.Time, bucket time.
 	totals := map[int32]*running{}
 	for rows.Next() {
 		var (
-			atMS, spanMS, rss int64
-			pid               int32
-			name              string
-			cpuSeconds        float64
+			atMS, spanMS, rss, rssMax int64
+			pid                       int32
+			name                      string
+			cpuSeconds, cpuMax        float64
 		)
-		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS); err != nil {
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax); err != nil {
 			return nil, err
 		}
+		_, _ = cpuMax, rssMax
 		r := totals[pid]
 		if r == nil {
 			r = &running{}

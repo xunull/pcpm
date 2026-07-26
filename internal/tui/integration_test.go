@@ -37,7 +37,16 @@ func TestRendersAFrameFromARealStore(t *testing.T) {
 	for i := range 360 {
 		at := now.Add(-30*time.Minute + time.Duration(i)*5*time.Second)
 		wrapperCPU += 0.001
-		workerCPU += 3.5 // ~70% of a core
+		// Mostly idle with occasional bursts — the shape of a forgotten dev
+		// server, and the one a mean alone would erase.
+		burst := 0.05
+		if i%23 < 2 {
+			burst = 3.5
+		}
+		if i > 250 && i < 262 {
+			burst = 4.6
+		}
+		workerCPU += burst
 		err := store.SaveSamples(target.ID, at, []watch.Sample{
 			{PID: 100, Created: now.Add(-2 * time.Hour), Name: "bun", CPUSeconds: wrapperCPU, RSSBytes: 30 << 20},
 			{PID: 101, Created: now.Add(-2 * time.Hour), Name: "esbuild", CPUSeconds: workerCPU, RSSBytes: 280 << 20},
@@ -64,19 +73,23 @@ func TestRendersAFrameFromARealStore(t *testing.T) {
 	frame := model.(Model).View()
 	t.Logf("\n%s", frame)
 
-	for _, want := range []string{"100", "bun", "cpu", "memory", "esbuild", "PID"} {
+	for _, want := range []string{"100", "bun", "CPU", "MEMORY", "esbuild", "PID"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("frame is missing %q", want)
 		}
 	}
-	// The worker's ~70% must be visible somewhere, and the wrapper must not be
-	// mistaken for it.
-	if !strings.Contains(frame, "70%") && !strings.Contains(frame, "69%") && !strings.Contains(frame, "71%") {
-		t.Errorf("the worker's CPU is not reported anywhere in the frame")
+	// The bursts are what say the process is still being used, and averaging
+	// alone would erase them — the peak has to survive into the frame.
+	if !strings.Contains(frame, "peak 9") {
+		t.Errorf("the window's peak is not reported; a mean-only chart would hide the bursts:\n%s", frame)
 	}
 	// A chart, not an empty box: asciigraph's axis and line characters.
-	if !strings.Contains(frame, "┤") || !strings.Contains(frame, "─") {
-		t.Error("no chart was drawn")
+	if !strings.Contains(frame, "│") || !strings.Contains(frame, "─") {
+		t.Error("no chart axis was drawn")
+	}
+	// braille is what a filled area is made of; without it nothing was plotted
+	if !strings.ContainsAny(frame, "⣿⣤⣀⡇⢸⣇⣧") {
+		t.Errorf("no filled area was drawn:\n%s", frame)
 	}
 	// The frame must fit the terminal it was told about.
 	for _, line := range strings.Split(frame, "\n") {

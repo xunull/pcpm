@@ -101,7 +101,7 @@ func TestViewShowsBothChartsAndTheProcessList(t *testing.T) {
 	m := loaded(t, source())
 	out := m.View()
 
-	for _, want := range []string{"cpu", "memory", "bun", "esbuild", "PID", "NAME"} {
+	for _, want := range []string{"CPU", "MEMORY", "bun", "esbuild", "PID", "NAME"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view is missing %q:\n%s", want, out)
 		}
@@ -214,7 +214,7 @@ func TestChartsShrinkToFitAShortTerminal(t *testing.T) {
 		t.Errorf("chart height %d is unusable", h)
 	}
 	out := m.View()
-	if !strings.Contains(out, "cpu") || !strings.Contains(out, "memory") {
+	if !strings.Contains(out, "CPU") || !strings.Contains(out, "MEMORY") {
 		t.Errorf("both charts should survive a short terminal:\n%s", out)
 	}
 	if lines := strings.Count(out, "\n"); lines > 40 {
@@ -262,8 +262,8 @@ func TestSelectingAProcessDrawsItsOwnLine(t *testing.T) {
 	}
 
 	out := m.View()
-	if !strings.Contains(out, "esbuild") || !strings.Contains(out, "alone") {
-		t.Errorf("the caption should say which process the second line is:\n%s", out)
+	if !strings.Contains(out, "esbuild") || !strings.Contains(out, "only") {
+		t.Errorf("the title should say the chart is now one process:\n%s", out)
 	}
 	if !strings.Contains(out, "▸") {
 		t.Errorf("the selected row should be marked in the process list:\n%s", out)

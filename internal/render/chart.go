@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guptarohit/asciigraph"
-
 	"github.com/xunull/pcpm/internal/watch"
 )
 
@@ -15,111 +13,153 @@ import (
 type ChartOptions struct {
 	Width, Height int
 	From, To      time.Time
-	Caption       string
-	// Label formats a y-axis value. Percentages and byte counts read very
-	// differently, so the caller supplies it.
+	// Title says what the chart is. It goes above the plot, in the terminal's
+	// own colours: the first version put it underneath in a hardcoded grey and
+	// it was invisible, which left no way to tell CPU from memory.
+	Title string
+	// Label formats a value for the y axis. Percentages and byte counts read
+	// very differently, so the caller supplies it.
 	Label func(float64) string
-	// WarnAbove colours the line above this value. Zero disables it.
-	WarnAbove float64
-	// Overlay is a second series drawn against the first — one process's own
-	// contribution against its tree's total. The command a person recognises is
-	// usually a wrapper, so seeing the two apart is what answers "which part of
-	// this is doing the work".
-	Overlay []watch.Point
+	// Max is the value at the top of the chart. Zero fits the data.
+	Max float64
+	// Flat draws without the severity gradient, for a quantity whose scale is
+	// fitted to its own data and so cannot say what "high" means.
+	Flat bool
+	// Ceiling rounds the fitted top up to a value that means something, so that
+	// a row's height on the chart still corresponds to a real quantity.
+	Ceiling func(float64) float64
 }
 
-// Chart draws a target's history as a line over a fixed time window.
+// Chart draws a target's history as a filled area with axes and a title.
 //
-// Periods with no data break the line rather than being interpolated across:
-// the machine was asleep or the collector was not running, and a straight line
-// through that would claim the value held steady when nothing is known about
-// it. A bucket flagged as spanning a gap breaks the line just before it for the
-// same reason — its own average is sound, but the shape leading into it is not.
-func Chart(points []watch.Point, value func(watch.Point) float64, o ChartOptions) string {
-	if o.Width < 8 {
-		o.Width = 8
+// The fill is the average over each slice of time and the cap above it is that
+// slice's peak, because a compressed bucket has to answer both "how loaded was
+// it" and "did anything happen at all" (ADR-0010).
+func Chart(points []watch.Point, series SeriesAccessor, o ChartOptions) string {
+	if o.Width < 12 {
+		o.Width = 12
 	}
 	if o.Height < 3 {
 		o.Height = 3
 	}
-	if len(points) == 0 {
-		return fmt.Sprintf("%s\n%s\n", o.Caption, strings.Repeat("─", o.Width))
+
+	columns, top := chartColumns(points, series, o)
+	if o.Max > 0 {
+		top = o.Max
+	} else if o.Ceiling != nil {
+		// Rounding up to a meaningful boundary is itself the headroom; adding
+		// more on top would push a 92% peak onto a two-core axis and waste half
+		// the chart.
+		top = o.Ceiling(top)
+	} else {
+		// Headroom above the observed peak. Scaling exactly to the maximum
+		// makes a steady value fill the chart, which reads as "at its limit"
+		// when it is merely constant.
+		top *= 1.25
+	}
+	if top <= 0 {
+		top = 1
 	}
 
-	series := columnise(points, value, o)
-	plots := [][]float64{series}
-	colors := []asciigraph.AnsiColor{asciigraph.Green}
-	if len(o.Overlay) > 0 {
-		plots = append(plots, columnise(o.Overlay, value, o))
-		colors = append(colors, asciigraph.Blue)
+	label := o.Label
+	if label == nil {
+		label = func(v float64) string { return fmt.Sprintf("%.0f", v) }
+	}
+	// The gutter fits the widest label, not just the top one: Percent renders
+	// 0 as "0.0%" and 70 as "70%", so sizing to the top overflows the row.
+	gutter := max(len([]rune(label(top))), len([]rune(label(0)))) + 1
+	plotWidth := max(o.Width-gutter-1, 8)
+
+	var b strings.Builder
+	if o.Title != "" {
+		fmt.Fprintf(&b, "%s\n", fit(o.Title, o.Width))
 	}
 
-	opts := []asciigraph.Option{
-		asciigraph.Width(o.Width),
-		asciigraph.Height(o.Height),
-		asciigraph.LowerBound(0),
-		asciigraph.AxisColor(asciigraph.Gray),
-		asciigraph.LabelColor(asciigraph.Gray),
-		asciigraph.SeriesColors(colors...),
-		asciigraph.XAxisRange(float64(o.From.Unix()), float64(o.To.Unix())),
-		asciigraph.XAxisTickCount(6),
-		asciigraph.XAxisValueFormatter(func(v float64) string {
-			return time.Unix(int64(v), 0).Format("15:04")
-		}),
+	body := strings.Split(strings.TrimSuffix(
+		Area(columns, AreaOptions{Width: plotWidth, Height: o.Height, Max: top, Flat: o.Flat}), "\n"), "\n")
+	for i, row := range body {
+		switch i {
+		case 0:
+			fmt.Fprintf(&b, "%*s │%s\n", gutter-1, label(top), row)
+		case len(body) - 1:
+			fmt.Fprintf(&b, "%*s │%s\n", gutter-1, label(0), row)
+		default:
+			fmt.Fprintf(&b, "%*s │%s\n", gutter-1, "", row)
+		}
 	}
-	if o.Label != nil {
-		opts = append(opts, asciigraph.YAxisValueFormatter(o.Label))
-	}
-	// A busy target should read as busy at a glance, without comparing against
-	// the axis. Threshold colouring applies to a single line only — with two,
-	// colour is what tells them apart.
-	if o.WarnAbove > 0 && len(plots) == 1 {
-		opts = append(opts, asciigraph.ColorAbove(asciigraph.Red, o.WarnAbove))
-	}
-	if o.Caption != "" {
-		opts = append(opts, asciigraph.Caption(o.Caption), asciigraph.CaptionColor(asciigraph.Gray))
-	}
-	if len(plots) == 1 {
-		return asciigraph.Plot(series, opts...) + "\n"
-	}
-	return asciigraph.PlotMany(plots, opts...) + "\n"
+	fmt.Fprintf(&b, "%*s └%s\n", gutter-1, "", strings.Repeat("─", plotWidth))
+	fmt.Fprintf(&b, "%*s %s\n", gutter-1, "", timeAxis(o.From, o.To, plotWidth))
+	return b.String()
 }
 
-// columnise lays points out along the window, one slot per column, leaving NaN
-// wherever nothing is known. asciigraph breaks its line at NaN rather than
-// drawing through it.
-func columnise(points []watch.Point, value func(watch.Point) float64, o ChartOptions) []float64 {
-	series := make([]float64, o.Width)
-	for i := range series {
-		series[i] = math.NaN()
+// SeriesAccessor reads the value and the peak a chart should draw for a point.
+type SeriesAccessor func(watch.Point) (value, peak float64)
+
+// CPUSeries draws CPU: the bucket's rate, capped at its peak.
+func CPUSeries(p watch.Point) (float64, float64) { return p.CPUPercent, p.PeakCPUPercent }
+
+// RSSSeries draws resident memory.
+func RSSSeries(p watch.Point) (float64, float64) {
+	return float64(p.RSSBytes), float64(p.PeakRSSBytes)
+}
+
+// chartColumns lays points along the window, one slot per half-character, and
+// reports the largest value seen so the axis can be scaled to it.
+//
+// Slots with no point stay absent rather than being filled by their neighbours:
+// nothing was collected then, and a chart that guessed would let a stopped
+// collector pass for a quiet process.
+func chartColumns(points []watch.Point, series SeriesAccessor, o ChartOptions) ([]Column, float64) {
+	slots := max(o.Width*2, 2)
+	span := o.To.Sub(o.From)
+	if span <= 0 || len(points) == 0 {
+		return nil, 0
 	}
 
-	span := o.To.Sub(o.From)
-	if span <= 0 {
-		return series
-	}
+	columns := make([]Column, slots)
+	top := 0.0
 	for _, p := range points {
 		offset := p.At.Sub(o.From)
 		if offset < 0 || offset >= span {
 			continue
 		}
-		col := int(float64(offset) / float64(span) * float64(o.Width))
-		if col >= o.Width {
-			col = o.Width - 1
+		i := min(int(float64(offset)/float64(span)*float64(slots)), slots-1)
+		value, peak := series(p)
+		// Several points can share a slot when the window is long. Keep the
+		// heavier: a slot that held a burst should look like it.
+		if !columns[i].Present || value > columns[i].Value {
+			columns[i].Value = value
 		}
-		series[col] = value(p)
-		// The bucket's own average is sound; what is unknown is the shape of
-		// the period leading into it. Break the line there rather than let it
-		// slope smoothly out of a hole.
-		if p.Gap && col > 0 {
-			series[col-1] = math.NaN()
-		}
+		columns[i].Peak = math.Max(columns[i].Peak, peak)
+		columns[i].Present = true
+		top = math.Max(top, math.Max(value, peak))
 	}
-	return series
+	return columns, top
 }
 
-// CPUValue reads a point's CPU percentage, for Chart.
-func CPUValue(p watch.Point) float64 { return p.CPUPercent }
+// timeAxis labels the window's span beneath the plot.
+func timeAxis(from, to time.Time, width int) string {
+	if width < 12 {
+		return ""
+	}
+	left := from.Format("15:04")
+	right := to.Format("15:04")
+	middle := from.Add(to.Sub(from) / 2).Format("15:04")
+	pad := width - len(left) - len(middle) - len(right)
+	if pad < 2 {
+		return left + strings.Repeat(" ", max(width-len(left)-len(right), 1)) + right
+	}
+	return left + strings.Repeat(" ", pad/2) + middle + strings.Repeat(" ", pad-pad/2) + right
+}
 
-// RSSValue reads a point's resident memory, for Chart.
-func RSSValue(p watch.Point) float64 { return float64(p.RSSBytes) }
+// WholeCores rounds a CPU ceiling up to the next whole core, so that the top of
+// the chart is always 100%, 200%, and so on. Keeping the axis on a real
+// boundary is what lets the colour gradient mean anything: half way up is half
+// a core, not half of whatever this window happened to reach.
+func WholeCores(top float64) float64 {
+	cores := math.Ceil(top / 100)
+	if cores < 1 {
+		cores = 1
+	}
+	return cores * 100
+}

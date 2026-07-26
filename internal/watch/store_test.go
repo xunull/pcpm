@@ -258,3 +258,26 @@ func TestOpenRefusesANewerSchema(t *testing.T) {
 		t.Error("Open accepted a database from a newer pcpm; want a clear refusal")
 	}
 }
+
+// The migration runner applies migrations[0..schemaVersion-1], so a version
+// that does not match the list silently skips the tail — which has happened
+// twice, both times by adding two statements as one step.
+func TestSchemaVersionMatchesTheMigrationList(t *testing.T) {
+	if len(migrations) != schemaVersion {
+		t.Fatalf("schemaVersion is %d but there are %d migrations: migrations %d onwards would never run",
+			schemaVersion, len(migrations), schemaVersion+1)
+	}
+}
+
+// Every table the code queries must exist after a fresh migration.
+func TestFreshDatabaseHasEveryTable(t *testing.T) {
+	s := open(t)
+
+	for _, table := range []string{"target", "sample", "rollup", "meta"} {
+		var name string
+		err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+		if err != nil {
+			t.Errorf("table %q is missing from a freshly migrated database: %v", table, err)
+		}
+	}
+}

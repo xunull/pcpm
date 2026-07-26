@@ -11,8 +11,14 @@ import (
 type Point struct {
 	At         time.Time
 	CPUPercent float64 // 100 means one core saturated; a tree can exceed it
-	RSSBytes   int64
-	Procs      int
+	// PeakCPUPercent is the highest rate seen inside this bucket. A bucket in a
+	// week-long window covers hours, and a three-second request averages to
+	// nothing across one — the peak is what keeps the evidence that something
+	// still uses this process (ADR-0010).
+	PeakCPUPercent float64
+	PeakRSSBytes   int64
+	RSSBytes       int64
+	Procs          int
 	// Gap is true when the samples this bucket was derived from are further
 	// apart than collection should have made them — the machine was asleep, or
 	// the collector was not running. The figures remain correct averages; what
@@ -99,6 +105,10 @@ func (s *Store) series(targetID int64, only int32, from, to time.Time, bucket ti
 		sh.cpuSeconds += d.cpuSeconds
 		sh.span += d.span
 		sh.rss = d.rss // the bucket's latest sample for this process
+		if d.span > 0 {
+			sh.peak = max(sh.peak, d.cpuSeconds/d.span.Seconds()*100)
+		}
+		sh.peakRSS = max(sh.peakRSS, d.rss)
 		gaps[key.at] = gaps[key.at] || d.gap
 	}
 	return buildPoints(acc, gaps, bucket), nil
@@ -125,6 +135,10 @@ type share struct {
 	cpuSeconds float64
 	span       time.Duration
 	rss        int64
+	// peak is the highest rate any single interval inside the bucket reached,
+	// which averaging the bucket would otherwise erase.
+	peak    float64
+	peakRSS int64
 }
 
 // buildPoints folds per-process contributions into per-bucket points.
@@ -138,7 +152,9 @@ type share struct {
 func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Duration) []Point {
 	type total struct {
 		cpuPercent float64
+		peak       float64
 		rss        int64
+		peakRSS    int64
 		procs      int
 	}
 	totals := map[int64]*total{}
@@ -151,18 +167,24 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 		if sh.span > 0 {
 			t.cpuPercent += sh.cpuSeconds / sh.span.Seconds() * 100
 		}
+		// Peaks add across the tree for the same reason rates do: two processes
+		// each briefly at 100% did use two cores.
+		t.peak += sh.peak
 		t.rss += sh.rss
+		t.peakRSS += sh.peakRSS
 		t.procs++
 	}
 
 	out := make([]Point, 0, len(totals))
 	for at, t := range totals {
 		out = append(out, Point{
-			At:         time.UnixMilli(at * bucket.Milliseconds()),
-			CPUPercent: t.cpuPercent,
-			RSSBytes:   t.rss,
-			Procs:      t.procs,
-			Gap:        gaps[at],
+			At:             time.UnixMilli(at * bucket.Milliseconds()),
+			CPUPercent:     t.cpuPercent,
+			PeakCPUPercent: max(t.peak, t.cpuPercent),
+			RSSBytes:       t.rss,
+			PeakRSSBytes:   max(t.peakRSS, t.rss),
+			Procs:          t.procs,
+			Gap:            gaps[at],
 		})
 	}
 	slices.SortFunc(out, func(a, b Point) int { return a.At.Compare(b.At) })
@@ -276,8 +298,8 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 		sum.First, sum.Last = points[0].At, points[len(points)-1].At
 	}
 	for _, p := range points {
-		sum.PeakCPUPercent = max(sum.PeakCPUPercent, p.CPUPercent)
-		sum.PeakRSSBytes = max(sum.PeakRSSBytes, p.RSSBytes)
+		sum.PeakCPUPercent = max(sum.PeakCPUPercent, p.PeakCPUPercent)
+		sum.PeakRSSBytes = max(sum.PeakRSSBytes, p.PeakRSSBytes)
 	}
 	if len(points) > 0 {
 		last := points[len(points)-1]
