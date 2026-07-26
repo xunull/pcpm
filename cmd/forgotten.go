@@ -11,6 +11,7 @@ import (
 	"github.com/xunull/pcpm/internal/config"
 	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
 	"github.com/xunull/pcpm/internal/render"
 )
 
@@ -52,7 +53,7 @@ func runForgotten(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	procs, err := forgotten.Collect()
+	procs, err := proc.Collect()
 	if err != nil {
 		return fmt.Errorf("collecting processes: %w", err)
 	}

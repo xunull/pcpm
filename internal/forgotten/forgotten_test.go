@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
 )
 
 // procs models a machine with two forgotten trees plus the things that must NOT
 // be flagged: a self-leading daemon, a helper whose parent shares its dead
 // group, a system daemon, a GUI app helper, and a shell.
-func procs(base time.Time) []Process {
-	return []Process{
+func procs(base time.Time) []proc.Process {
+	return []proc.Process{
 		{PID: 1, PPID: 0, PGID: 1, Cmdline: "/sbin/launchd"},
 
 		// forgotten root: group 900's leader is gone, parent (launchd) is in group 1
@@ -82,7 +83,7 @@ func TestDetect(t *testing.T) {
 // tree rather than as a second finding, or its processes are counted twice.
 func TestDetectDoesNotNestRoots(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	nested := []Process{
+	nested := []proc.Process{
 		{PID: 1, PPID: 0, PGID: 1, Cmdline: "/sbin/launchd"},
 		{PID: 100, PPID: 1, PGID: 900, Name: "outer", Cmdline: "outer serve", Created: base},
 		{PID: 101, PPID: 100, PGID: 910, Name: "inner", Cmdline: "inner worker", Created: base},
@@ -104,9 +105,9 @@ func TestDetectDoesNotNestRoots(t *testing.T) {
 
 func TestApplyIgnore(t *testing.T) {
 	trees := []Tree{
-		{Root: Process{PID: 1, Name: "uv"}},
-		{Root: Process{PID: 2, Name: "gbrain"}},
-		{Root: Process{PID: 3, Name: "some.helper"}},
+		{Root: proc.Process{PID: 1, Name: "uv"}},
+		{Root: proc.Process{PID: 2, Name: "gbrain"}},
+		{Root: proc.Process{PID: 3, Name: "some.helper"}},
 	}
 
 	// exact name and glob both drop; order of the rest is kept

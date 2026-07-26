@@ -10,29 +10,15 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
 )
-
-// Process is a single process observed on the host, reduced to the fields pcpm
-// needs to decide whether its launching job is gone.
-type Process struct {
-	PID     int32
-	PPID    int32
-	PGID    int32 // process group; a setsid'd daemon has PGID == PID
-	UID     int32
-	User    string
-	Name    string
-	Cmdline string
-	Cwd     string // launch directory
-	Created time.Time
-}
 
 // Tree is a Forgotten Process together with what its descendants add: the whole
 // tree was forgotten, not just the root.
 type Tree struct {
-	Root  Process
+	Root  proc.Process
 	Procs int           // processes in the tree, including the root
 	Ports []listen.Port // listening ports held anywhere in the tree, ascending
 }
@@ -40,20 +26,13 @@ type Tree struct {
 // Detect returns the forgotten process trees, oldest-first. portsByPID supplies
 // the listening ports of any process, so a root inherits the ports its
 // descendants hold; it may be nil.
-func Detect(procs []Process, portsByPID map[int32][]listen.Port) []Tree {
-	byPID := make(map[int32]Process, len(procs))
-	children := make(map[int32][]int32, len(procs))
-	for _, p := range procs {
-		byPID[p.PID] = p
-	}
-	for _, p := range procs {
-		children[p.PPID] = append(children[p.PPID], p.PID)
-	}
+func Detect(procs []proc.Process, portsByPID map[int32][]listen.Port) []Tree {
+	ix := proc.NewIndex(procs)
 
-	var candidates []Process
+	var candidates []proc.Process
 	roots := make(map[int32]bool)
 	for _, p := range procs {
-		if isForgottenRoot(p, byPID) && !isNoise(p.Cmdline) {
+		if isForgottenRoot(p, ix) && !isNoise(p.Cmdline) {
 			candidates = append(candidates, p)
 			roots[p.PID] = true
 		}
@@ -63,10 +42,10 @@ func Detect(procs []Process, portsByPID map[int32][]listen.Port) []Tree {
 	for _, p := range candidates {
 		// A candidate inside another candidate's tree is part of that tree, not
 		// a finding of its own — reporting both would count it twice.
-		if hasForgottenAncestor(p, byPID, roots) {
+		if hasForgottenAncestor(p, ix, roots) {
 			continue
 		}
-		members := treeMembers(p.PID, children)
+		members := ix.TreeMembers(p.PID)
 		out = append(out, Tree{
 			Root:  p,
 			Procs: len(members),
@@ -79,10 +58,10 @@ func Detect(procs []Process, portsByPID map[int32][]listen.Port) []Tree {
 
 // hasForgottenAncestor reports whether any ancestor of p is itself a forgotten
 // root, which makes p a member of that tree rather than a root in its own right.
-func hasForgottenAncestor(p Process, byPID map[int32]Process, roots map[int32]bool) bool {
+func hasForgottenAncestor(p proc.Process, ix proc.Index, roots map[int32]bool) bool {
 	seen := map[int32]bool{p.PID: true}
 	for current := p; ; {
-		parent, ok := byPID[current.PPID]
+		parent, ok := ix.Lookup(current.PPID)
 		if !ok || seen[parent.PID] {
 			return false
 		}
@@ -137,11 +116,11 @@ func matchesAny(name string, patterns []string) bool {
 //  2. p's parent is not in that same process group — p is the boundary where
 //     the orphaning happened, rather than a descendant inside the leftover tree
 //     (whose parent is alive and shares the dead group).
-func isForgottenRoot(p Process, byPID map[int32]Process) bool {
-	if _, leaderAlive := byPID[p.PGID]; leaderAlive {
+func isForgottenRoot(p proc.Process, ix proc.Index) bool {
+	if _, leaderAlive := ix.Lookup(p.PGID); leaderAlive {
 		return false
 	}
-	if parent, ok := byPID[p.PPID]; ok && parent.PGID == p.PGID {
+	if parent, ok := ix.Lookup(p.PPID); ok && parent.PGID == p.PGID {
 		return false
 	}
 	return true
@@ -174,21 +153,6 @@ func isNoise(cmdline string) bool {
 		return true
 	}
 	return shellPattern.MatchString(c)
-}
-
-// treeMembers returns root and every descendant of it, breadth-first.
-func treeMembers(root int32, children map[int32][]int32) []int32 {
-	members := []int32{root}
-	seen := map[int32]bool{root: true}
-	for i := 0; i < len(members); i++ {
-		for _, kid := range children[members[i]] {
-			if !seen[kid] {
-				seen[kid] = true
-				members = append(members, kid)
-			}
-		}
-	}
-	return members
 }
 
 // collectPorts merges the listening ports of every process in a tree, deduped

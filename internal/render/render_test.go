@@ -8,6 +8,7 @@ import (
 
 	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/proc"
 )
 
 func TestAge(t *testing.T) {
@@ -94,7 +95,7 @@ func TestGrid(t *testing.T) {
 func TestForgottenTableShowsProcessGroup(t *testing.T) {
 	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
 	trees := []forgotten.Tree{{
-		Root: forgotten.Process{
+		Root: proc.Process{
 			PID: 58714, PGID: 58669,
 			Cmdline: "uv run uvicorn", Cwd: "/Users/me/proj",
 			Created: now.Add(-2 * time.Hour),
@@ -133,7 +134,7 @@ func TestForgottenJSON(t *testing.T) {
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	longCmd := "sh -c 'a && b' " + strings.Repeat("x", 500)
 	trees := []forgotten.Tree{{
-		Root: forgotten.Process{
+		Root: proc.Process{
 			PID: 100, PPID: 1, PGID: 900, UID: 501, User: "quincy",
 			Name: "uv", Cmdline: longCmd, Cwd: "/proj", Created: created,
 		},
