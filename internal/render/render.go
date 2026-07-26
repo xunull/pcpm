@@ -11,6 +11,7 @@ import (
 
 	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
+	"github.com/xunull/pcpm/internal/watch"
 )
 
 // ellipsis marks a value that has been cut short to fit its column.
@@ -263,6 +264,98 @@ func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width in
 		}
 	}
 	return Grid([]string{"PID", "PGID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
+}
+
+// WatchTargetsTable renders Watch Targets as an aligned table with columns
+// PID / WATCHING / PROCESS / ADDED / DIR / COMMAND.
+//
+// WATCHING and PROCESS are separate because they are separate facts: pcpm keeps
+// a target's history after its process exits, and the user can stop watching
+// something that is still running.
+func WatchTargetsTable(statuses []watch.Status, now time.Time, home string, width int) string {
+	rows := make([][]string, len(statuses))
+	for i, s := range statuses {
+		dir := ShortPath(s.Cwd, home, dirColumnWidth)
+		if dir == "" {
+			dir = "-"
+		}
+		rows[i] = []string{
+			strconv.Itoa(int(s.PID)),
+			yesNo(s.Watching()),
+			runningOrGone(s.Running),
+			Age(now, s.AddedAt),
+			dir,
+			s.Cmdline,
+		}
+	}
+	return Grid([]string{"PID", "WATCHING", "PROCESS", "ADDED", "DIR", "COMMAND"}, rows, width)
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+func runningOrGone(b bool) string {
+	if b {
+		return "running"
+	}
+	return "gone"
+}
+
+// jsonWatchTarget is the machine-readable view of a Watch Target: every stored
+// field untruncated, plus whether its process is still there. Times are
+// RFC 3339; StoppedAt is null while pcpm is still watching.
+type jsonWatchTarget struct {
+	PID       int32   `json:"pid"`
+	Name      string  `json:"name"`
+	Cmdline   string  `json:"cmdline"`
+	Cwd       string  `json:"cwd"`
+	CreatedAt string  `json:"created_at"`
+	AddedAt   string  `json:"added_at"`
+	StoppedAt *string `json:"stopped_at"`
+	Watching  bool    `json:"watching"`
+	Running   bool    `json:"running"`
+}
+
+// WatchTargetJSON renders one Watch Target as a JSON object — the shape a
+// command that acted on a single target should report.
+func WatchTargetJSON(s watch.Status) (string, error) {
+	return encodeJSON(watchTargetView(s))
+}
+
+// WatchTargetsJSON renders Watch Targets as an indented JSON array. No targets
+// renders "[]" (never "null").
+func WatchTargetsJSON(statuses []watch.Status) (string, error) {
+	views := make([]jsonWatchTarget, len(statuses))
+	for i, s := range statuses {
+		views[i] = watchTargetView(s)
+	}
+	return encodeJSON(views)
+}
+
+// watchTargetView is the shared conversion behind the single- and multi-target
+// JSON renderers.
+func watchTargetView(s watch.Status) jsonWatchTarget {
+	v := jsonWatchTarget{
+		PID:      s.PID,
+		Name:     s.Name,
+		Cmdline:  s.Cmdline,
+		Cwd:      s.Cwd,
+		AddedAt:  s.AddedAt.UTC().Format(time.RFC3339),
+		Watching: s.Watching(),
+		Running:  s.Running,
+	}
+	if !s.Created.IsZero() {
+		v.CreatedAt = s.Created.UTC().Format(time.RFC3339)
+	}
+	if s.StoppedAt != nil {
+		stopped := s.StoppedAt.UTC().Format(time.RFC3339)
+		v.StoppedAt = &stopped
+	}
+	return v
 }
 
 // ListenersTable renders listeners as an aligned table with columns

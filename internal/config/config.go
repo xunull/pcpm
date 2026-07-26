@@ -62,12 +62,26 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 // $XDG_CONFIG_HOME/pcpm, or ~/.config/pcpm when XDG_CONFIG_HOME is unset.
 // It returns "" when no home directory is known.
 func DefaultDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+	return userDir("XDG_CONFIG_HOME", ".config")
+}
+
+// StateDir is the per-user directory pcpm keeps data it generates in — as
+// opposed to configuration the user writes: $XDG_STATE_HOME/pcpm, or
+// ~/.local/state/pcpm when XDG_STATE_HOME is unset. It returns "" when no home
+// directory is known.
+func StateDir() string {
+	return userDir("XDG_STATE_HOME", ".local", "state")
+}
+
+// userDir resolves an XDG directory: the named environment variable when set,
+// otherwise the fallback path relative to the home directory.
+func userDir(env string, fallback ...string) string {
+	if x := os.Getenv(env); x != "" {
 		return filepath.Join(x, "pcpm")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "pcpm")
+	return filepath.Join(append(append([]string{home}, fallback...), "pcpm")...)
 }
