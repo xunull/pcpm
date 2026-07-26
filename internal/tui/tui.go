@@ -45,6 +45,9 @@ const warnCPUPercent = 80
 type Source interface {
 	Status() (watch.Status, error)
 	Series(from, to time.Time, bucket time.Duration) ([]watch.Point, error)
+	// SeriesOfProcess narrows the same query to one member of the tree, so its
+	// own contribution can be shown against the total.
+	SeriesOfProcess(pid int32, from, to time.Time, bucket time.Duration) ([]watch.Point, error)
 	Summary(from, to time.Time, bucket time.Duration) (watch.Summary, error)
 }
 
@@ -65,6 +68,14 @@ type Model struct {
 	summary watch.Summary
 	err     error
 	loaded  bool
+
+	// selected is an index into summary.Processes, or -1 for "the whole tree".
+	// The selected process's own line is drawn against the total, because the
+	// command you recognise is usually a wrapper and the question is which part
+	// of the tree is responsible.
+	selected     int
+	selectedPID  int32
+	selectedLine []watch.Point
 }
 
 // New returns a view of one Watch Target, opening on the given window.
@@ -73,22 +84,24 @@ func New(source Source, home string, window int) Model {
 		window = 1
 	}
 	return Model{
-		source:  source,
-		home:    home,
-		now:     time.Now,
-		refresh: refreshInterval,
-		window:  window,
-		width:   80,
-		height:  24,
+		source:   source,
+		home:     home,
+		now:      time.Now,
+		refresh:  refreshInterval,
+		window:   window,
+		selected: -1,
+		width:    80,
+		height:   24,
 	}
 }
 
 // loadedMsg carries one refresh's worth of data.
 type loadedMsg struct {
-	status  watch.Status
-	points  []watch.Point
-	summary watch.Summary
-	err     error
+	status   watch.Status
+	points   []watch.Point
+	summary  watch.Summary
+	selected []watch.Point
+	err      error
 }
 
 type tickMsg time.Time
@@ -108,6 +121,7 @@ func (m Model) load() tea.Cmd {
 	w := Windows[m.window]
 	to := m.now()
 	from := to.Add(-w.Span)
+	pid := m.selectedPID
 	return func() tea.Msg {
 		status, err := m.source.Status()
 		if err != nil {
@@ -121,11 +135,16 @@ func (m Model) load() tea.Cmd {
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-		return loadedMsg{status: status, points: points, summary: summary}
+		var selected []watch.Point
+		if pid != 0 {
+			if selected, err = m.source.SeriesOfProcess(pid, from, to, w.Bucket); err != nil {
+				return loadedMsg{err: err}
+			}
+		}
+		return loadedMsg{status: status, points: points, summary: summary, selected: selected}
 	}
 }
 
-// Update handles keys, resizes and refreshes.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -138,6 +157,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, m.load()
+		case "tab", "down", "j":
+			return m.selectNext(1)
+		case "shift+tab", "up", "k":
+			return m.selectNext(-1)
 		default:
 			for i, w := range Windows {
 				if key == w.Key {
@@ -153,6 +176,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		if msg.err == nil {
 			m.status, m.points, m.summary = msg.status, msg.points, msg.summary
+			m.selectedLine = msg.selected
+			// The breakdown is reordered on every refresh, so follow the PID
+			// rather than the row: otherwise the selection slides onto whatever
+			// process happens to be busiest now.
+			m.selected = indexOfPID(m.summary.Processes, m.selectedPID)
 		}
 		return m, nil
 
@@ -162,7 +190,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the whole screen.
 func (m Model) View() string {
 	if m.err != nil {
 		return fmt.Sprintf("pcpm: %v\n\npress q to quit\n", m.err)
@@ -183,9 +210,10 @@ func (m Model) View() string {
 
 	b.WriteString(render.Chart(m.points, render.CPUValue, render.ChartOptions{
 		Width: chartWidth, Height: chartHeight, From: from, To: to,
-		Caption:   fmt.Sprintf("cpu — now %s, peak %s", render.Percent(m.summary.CurrentCPUPercent), render.Percent(m.summary.PeakCPUPercent)),
+		Caption:   m.cpuCaption(),
 		Label:     render.Percent,
 		WarnAbove: warnCPUPercent,
+		Overlay:   m.selectedLine,
 	}))
 	b.WriteString("\n")
 	b.WriteString(render.Chart(m.points, render.RSSValue, render.ChartOptions{
@@ -198,6 +226,52 @@ func (m Model) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.footer())
 	return b.String()
+}
+
+// cpuCaption says what the chart is showing, including which process the second
+// line belongs to when one is selected.
+func (m Model) cpuCaption() string {
+	base := fmt.Sprintf("cpu — now %s, peak %s",
+		render.Percent(m.summary.CurrentCPUPercent), render.Percent(m.summary.PeakCPUPercent))
+	if m.selected >= 0 && m.selected < len(m.summary.Processes) {
+		p := m.summary.Processes[m.selected]
+		return fmt.Sprintf("%s   ·   tree total, and %s (%d) alone", base, p.Name, p.PID)
+	}
+	return base
+}
+
+// selectNext moves the selection through the process list, wrapping back to
+// "the whole tree" at either end.
+func (m Model) selectNext(step int) (tea.Model, tea.Cmd) {
+	n := len(m.summary.Processes)
+	if n == 0 {
+		return m, nil
+	}
+	next := m.selected + step
+	switch {
+	case next >= n, next < -1:
+		next = -1
+	}
+	m.selected = next
+	if next < 0 {
+		m.selectedPID, m.selectedLine = 0, nil
+		return m, nil
+	}
+	m.selectedPID = m.summary.Processes[next].PID
+	return m, m.load()
+}
+
+// indexOfPID finds a process in a breakdown, or -1.
+func indexOfPID(usage []watch.ProcessUsage, pid int32) int {
+	if pid == 0 {
+		return -1
+	}
+	for i, u := range usage {
+		if u.PID == pid {
+			return i
+		}
+	}
+	return -1
 }
 
 // header names the target and says what became of it.
@@ -225,14 +299,19 @@ func (m Model) processes() string {
 	limit := min(len(m.summary.Processes), m.processRows())
 	rows := make([][]string, limit)
 	for i, p := range m.summary.Processes[:limit] {
+		marker := " "
+		if i == m.selected {
+			marker = "▸"
+		}
 		rows[i] = []string{
+			marker,
 			strconv.Itoa(int(p.PID)),
 			p.Name,
 			render.Percent(p.CPUPercent),
 			render.Bytes(p.RSSBytes),
 		}
 	}
-	out := render.Grid([]string{"PID", "NAME", "CPU", "RSS"}, rows, m.width)
+	out := render.Grid([]string{" ", "PID", "NAME", "CPU", "RSS"}, rows, m.width)
 	if hidden := len(m.summary.Processes) - limit; hidden > 0 {
 		out += fmt.Sprintf("… and %d more\n", hidden)
 	}
@@ -253,7 +332,7 @@ func (m Model) footer() string {
 	if m.hasGap() {
 		gap = "  · breaks mean no data was collected"
 	}
-	return truncateLine(strings.Join(parts, " ")+"   [r]refresh [q]quit"+gap, m.width) + "\n"
+	return truncateLine(strings.Join(parts, " ")+"   [tab]process [r]refresh [q]quit"+gap, m.width) + "\n"
 }
 
 // hasGap reports whether the window contains a period nothing was collected in.

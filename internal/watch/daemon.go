@@ -115,7 +115,7 @@ func StopDaemon(dbPath string) (bool, error) {
 // impossible for `pcpm forgotten` to report — the same property that keeps
 // redis and postgres out of the findings. A tool that hunts unattended
 // background processes must not leave one behind.
-func StartDaemon(dbPath string, extraArgs ...string) (int32, error) {
+func StartDaemon(dbPath string) (int32, error) {
 	if running, _ := daemonHolder(lockFile(dbPath)); running {
 		return 0, nil
 	}
@@ -124,7 +124,7 @@ func StartDaemon(dbPath string, extraArgs ...string) (int32, error) {
 		return 0, fmt.Errorf("finding the pcpm binary: %w", err)
 	}
 
-	args := append([]string{"watch", "daemon", "--db", dbPath, "--quiet"}, extraArgs...)
+	args := []string{"watch", "daemon", "--db", dbPath, "--quiet"}
 	return startDetached(self, args, DaemonLogPath(dbPath))
 }
 
@@ -162,7 +162,8 @@ func startDetached(name string, args []string, logPath string) (int32, error) {
 	return pid, nil
 }
 
-// DaemonLogPath is where a background collector's output goes.
+// DaemonLogPath is where a background collector's output goes: it outlives the
+// terminal that started it, so a failure has to be discoverable somewhere.
 func DaemonLogPath(dbPath string) string {
 	return filepath.Join(filepath.Dir(dbPath), "daemon.log")
 }

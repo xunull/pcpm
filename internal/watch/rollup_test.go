@@ -24,7 +24,7 @@ func TestRollupPreservesTheRate(t *testing.T) {
 		t.Fatalf("Series: %v", err)
 	}
 
-	if _, err := s.Rollup(base.Add(-time.Hour), at(base, 300), time.Minute); err != nil {
+	if _, err := s.Rollup(at(base, 300), time.Minute); err != nil {
 		t.Fatalf("Rollup: %v", err)
 	}
 	fromRollup, err := s.RolledSeries(id, base, at(base, 120), time.Minute)
@@ -47,7 +47,7 @@ func TestRollupIsIncremental(t *testing.T) {
 	s, id, base := seededTarget(t)
 	seed(t, s, id, base, 100, [][2]float64{{0, 0}, {5, 1}, {10, 2}})
 
-	first, err := s.Rollup(base.Add(-time.Hour), at(base, 60), time.Minute)
+	first, err := s.Rollup(at(base, 60), time.Minute)
 	if err != nil {
 		t.Fatalf("first Rollup: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRollupIsIncremental(t *testing.T) {
 
 	// Nothing new has been collected, so a second pass has nothing to do rather
 	// than re-summarising everything.
-	again, err := s.Rollup(base.Add(-time.Hour), at(base, 60), time.Minute)
+	again, err := s.Rollup(at(base, 60), time.Minute)
 	if err != nil {
 		t.Fatalf("second Rollup: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRollupIsIncremental(t *testing.T) {
 
 	// New samples do get picked up.
 	seed(t, s, id, base, 100, [][2]float64{{65, 3}, {70, 4}})
-	third, err := s.Rollup(base.Add(-time.Hour), at(base, 120), time.Minute)
+	third, err := s.Rollup(at(base, 120), time.Minute)
 	if err != nil {
 		t.Fatalf("third Rollup: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestRetentionDropsRawSamplesButKeepsRollups(t *testing.T) {
 	seed(t, s, id, old, 100, [][2]float64{{0, 0}, {5, 1}, {10, 2}})
 	seed(t, s, id, base, 100, [][2]float64{{0, 100}, {5, 101}})
 
-	if _, err := s.Rollup(old.Add(-time.Hour), at(base, 60), time.Minute); err != nil {
+	if _, err := s.Rollup(at(base, 60), time.Minute); err != nil {
 		t.Fatalf("Rollup: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestRetainKeepsRollupsWithinTheirOwnWindow(t *testing.T) {
 	s, id, base := seededTarget(t)
 	ancient := base.Add(-60 * 24 * time.Hour)
 	seed(t, s, id, ancient, 100, [][2]float64{{0, 0}, {5, 1}})
-	if _, err := s.Rollup(ancient.Add(-time.Hour), base, time.Minute); err != nil {
+	if _, err := s.Rollup(base, time.Minute); err != nil {
 		t.Fatalf("Rollup: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestRetainKeepsRollupsWithinTheirOwnWindow(t *testing.T) {
 func TestSeriesForChoosesTheTableFromTheWindow(t *testing.T) {
 	s, id, base := seededTarget(t)
 	seed(t, s, id, base, 100, [][2]float64{{0, 0}, {5, 1}, {10, 2}, {15, 3}})
-	if _, err := s.Rollup(base.Add(-time.Hour), at(base, 60), time.Minute); err != nil {
+	if _, err := s.Rollup(at(base, 60), time.Minute); err != nil {
 		t.Fatalf("Rollup: %v", err)
 	}
 

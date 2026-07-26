@@ -104,23 +104,5 @@ func (s *Store) MarkEnded(targetID int64, at time.Time) error {
 // rather than from a control channel, so adding or stopping a target needs no
 // IPC at all (ADR-0009).
 func (s *Store) WatchedTargets() ([]Target, error) {
-	rows, err := s.db.Query(
-		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at
-		 FROM target
-		 WHERE stopped_at IS NULL AND ended_at IS NULL
-		 ORDER BY added_at, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []Target
-	for rows.Next() {
-		t, err := scanTarget(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+	return s.targetsWhere(`stopped_at IS NULL AND ended_at IS NULL`)
 }

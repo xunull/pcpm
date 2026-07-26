@@ -149,11 +149,11 @@ pcpm watch rm 68283      # 停止监控,已采集的历史保留
        19:00            19:12           19:24            19:36           19:48            20:00
                                 memory — now 310 MB, peak 310 MB
 
-PID  NAME     CPU   RSS
-101  esbuild  70%   280 MB
-100  bun      0.0%  30 MB
+   PID  NAME     CPU   RSS
+▸  101  esbuild  70%   280 MB
+   100  bun      0.0%  30 MB
 
-[1]5m  [2]1h* [3]24h  [4]7d    [r]refresh [q]quit
+[1]5m  [2]1h* [3]24h  [4]7d    [tab]process [r]refresh [q]quit
 ```
 
 注意进程列表:**你指定的那个 `bun` 占用 0.0%** —— 真正在干活的是它下面的 `esbuild`。这才是常态。你认得的那条命令往往只是个包装器,所以**只盯你输入的那个 PID 会报告一个"闲置"的进程,而这棵树正在打满一个核**。pcpm 测量树里的每一个进程,并告诉你责任在谁身上。
@@ -166,6 +166,7 @@ PID  NAME     CPU   RSS
 - **线断开表示那段时间没采到数据** —— 机器休眠了,或者采集器没在跑。这里**故意不连线**:画一条直线过去等于宣称"那段时间数值很稳定",而事实是那段时间一无所知。
 - **CPU 可以超过 100%** —— 这是一棵树,100% 指的是一个核。
 - **CPU 超过 80% 会变红。**
+- **`tab` 在进程列表里移动。** 选中某个进程后,它自己的曲线会叠加在整棵树的总量之上 —— 这正是区分"忙的是包装器还是干活的"的办法。`tab` 走过最后一项会回到只看整棵树。
 
 ### 存什么、存多久
 
@@ -247,7 +248,11 @@ watch:
 ## 延伸阅读
 
 - [进程组与被遗忘的进程](docs/pgid-and-forgotten-processes.md) —— 为什么进程组是那个能在启动者死后依然留存的信号,以及在 macOS 和 Linux 上分别怎么查 PGID
-- [架构决策记录](docs/adr/) —— 平台范围、判据为何从 `PPID == 1` 改成「进程组组长已死」、指标为何用 SQLite 而不是时序数据库、Sample 为何存累计计数器而非百分比、以及采集器为何是"单守护进程 + 以数据库为控制面"
+- 架构决策记录([全部](docs/adr/)):
+  - [ADR-0005](docs/adr/0005-detect-forgotten-by-dead-process-group-leader.md) —— 判据为何从 `PPID == 1` 改成「进程组组长已死」
+  - [ADR-0007](docs/adr/0007-metrics-in-sqlite-not-a-tsdb.md) —— 指标为何用 SQLite 而不是时序数据库
+  - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) —— Sample 为何存累计计数器而非百分比
+  - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) —— 采集器为何是「单守护进程 + 以数据库为控制面」
 - [`CONTEXT.md`](CONTEXT.md) —— 项目术语表
 
 ## 许可证

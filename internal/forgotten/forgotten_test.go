@@ -1,6 +1,8 @@
 package forgotten
 
 import (
+	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -150,6 +152,52 @@ func TestDetectExcludes(t *testing.T) {
 	} {
 		if flagged[tc.pid] {
 			t.Errorf("pid %d (%s) should not be reported as forgotten", tc.pid, tc.why)
+		}
+	}
+}
+
+// A process that detaches the way pcpm's own collector does — its own session,
+// its own process group, re-parented to init — must not be reported. This runs
+// against a real process and the real machine rather than a hand-built
+// snapshot, because that is the claim: pcpm does not flag its own daemon.
+func TestADetachedDaemonIsNotReported(t *testing.T) {
+	daemon := exec.Command("/bin/sleep", "30")
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("starting a detached process: %v", err)
+	}
+	pid := int32(daemon.Process.Pid)
+	defer func() {
+		syscall.Kill(int(pid), syscall.SIGKILL)
+		daemon.Wait()
+	}()
+
+	// It must genuinely be in the shape being tested, or the test proves nothing.
+	pgid, err := syscall.Getpgid(int(pid))
+	if err != nil {
+		t.Fatalf("Getpgid: %v", err)
+	}
+	if int32(pgid) != pid {
+		t.Fatalf("the test process did not lead its own group (%d vs %d)", pgid, pid)
+	}
+
+	procs, err := proc.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	found := false
+	for _, p := range procs {
+		if p.PID == pid {
+			found = true
+		}
+	}
+	if !found {
+		t.Skip("the process was not in the snapshot; nothing to assert")
+	}
+
+	for _, tree := range Detect(procs, nil) {
+		if tree.Root.PID == pid {
+			t.Errorf("a process leading its own group was reported as forgotten (pid %d)", pid)
 		}
 	}
 }

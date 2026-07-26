@@ -149,11 +149,11 @@ pcpm watch rm 68283      # stop watching; the history is kept
        19:00            19:12           19:24            19:36           19:48            20:00
                                 memory — now 310 MB, peak 310 MB
 
-PID  NAME     CPU   RSS
-101  esbuild  70%   280 MB
-100  bun      0.0%  30 MB
+   PID  NAME     CPU   RSS
+▸  101  esbuild  70%   280 MB
+   100  bun      0.0%  30 MB
 
-[1]5m  [2]1h* [3]24h  [4]7d    [r]refresh [q]quit
+[1]5m  [2]1h* [3]24h  [4]7d    [tab]process [r]refresh [q]quit
 ```
 
 Note the process list: **`bun`, the process you named, is using 0.0%** — the work is being done by `esbuild` underneath it. That is the normal shape. The command you recognise is usually a wrapper, so watching only the PID you typed would report an idle process while the tree pegs a core. pcpm measures every process in the tree and shows which one is responsible.
@@ -166,6 +166,7 @@ Piped or redirected output prints a text summary instead of control codes; `--pl
 - **A break in the line means no data was collected** — the machine was asleep, or the collector was not running. It is deliberately not drawn through: a straight line there would claim the value held steady when nothing at all is known about it.
 - **CPU can exceed 100%.** It is a tree, and 100% means one core.
 - **CPU turns red above 80%.**
+- **`tab` walks the process list.** With a process selected, its own line is drawn against the tree's total, which is how you tell a busy wrapper from a busy worker. `tab` past the end returns to the tree alone.
 
 ### What is stored, and for how long
 
@@ -248,7 +249,11 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
 ## Further reading
 
 - [Process groups and forgotten processes](docs/pgid-and-forgotten-processes.md) — why the process group is the signal that survives the launcher's death, and how to read a PGID on macOS and Linux
-- [Architecture decisions](docs/adr/) — platform scope, why detection changed from `PPID == 1` to a dead process group leader, why metrics live in SQLite rather than a time-series database, why samples store counters rather than percentages, and why the collector is one daemon controlled through the database
+- Architecture decisions ([all](docs/adr/)):
+  - [ADR-0005](docs/adr/0005-detect-forgotten-by-dead-process-group-leader.md) — why detection changed from `PPID == 1` to a dead process group leader
+  - [ADR-0007](docs/adr/0007-metrics-in-sqlite-not-a-tsdb.md) — why metrics live in SQLite rather than a time-series database
+  - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) — why samples store cumulative CPU rather than a percentage
+  - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) — why the collector is one daemon controlled through the database
 - [`CONTEXT.md`](CONTEXT.md) — the project's glossary
 
 ## License

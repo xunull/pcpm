@@ -14,11 +14,12 @@ import (
 // fakeSource serves fixed data and records what was asked of it, so the view's
 // behaviour can be checked without a database.
 type fakeSource struct {
-	status   watch.Status
-	points   []watch.Point
-	summary  watch.Summary
-	err      error
-	requests []time.Duration // the span of each Series call
+	status      watch.Status
+	points      []watch.Point
+	summary     watch.Summary
+	err         error
+	requests    []time.Duration // the span of each Series call
+	selectedFor int32           // the pid the last per-process query asked about
 }
 
 func (f *fakeSource) Status() (watch.Status, error) { return f.status, f.err }
@@ -26,6 +27,17 @@ func (f *fakeSource) Status() (watch.Status, error) { return f.status, f.err }
 func (f *fakeSource) Series(from, to time.Time, _ time.Duration) ([]watch.Point, error) {
 	f.requests = append(f.requests, to.Sub(from))
 	return f.points, f.err
+}
+
+func (f *fakeSource) SeriesOfProcess(pid int32, _, _ time.Time, _ time.Duration) ([]watch.Point, error) {
+	f.selectedFor = pid
+	// half the tree's usage, so an overlay is distinguishable from the total
+	out := make([]watch.Point, len(f.points))
+	for i, p := range f.points {
+		p.CPUPercent /= 2
+		out[i] = p
+	}
+	return out, f.err
 }
 
 func (f *fakeSource) Summary(time.Time, time.Time, time.Duration) (watch.Summary, error) {
@@ -217,5 +229,86 @@ func TestEndedTargetIsLabelledAsSuch(t *testing.T) {
 
 	if !strings.Contains(m.View(), "ended") {
 		t.Errorf("a target whose processes have exited should say so:\n%s", m.View())
+	}
+}
+
+// The command a person recognises is usually a wrapper, so the chart has to be
+// able to separate one process's own usage from its tree's total.
+func TestSelectingAProcessDrawsItsOwnLine(t *testing.T) {
+	f := source()
+	m := loaded(t, f)
+
+	if m.selected != -1 {
+		t.Fatalf("the view should open on the whole tree, got selection %d", m.selected)
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	if m.selected != 0 {
+		t.Fatalf("tab should select the first process, got %d", m.selected)
+	}
+	if m.selectedPID != 101 {
+		t.Errorf("selected pid = %d, want the busiest process 101", m.selectedPID)
+	}
+	for _, msg := range runCmd(cmd) {
+		m2, _ := m.Update(msg)
+		m = m2.(Model)
+	}
+	if f.selectedFor != 101 {
+		t.Errorf("the per-process query asked about pid %d, want 101", f.selectedFor)
+	}
+	if len(m.selectedLine) == 0 {
+		t.Fatal("no separate line was loaded for the selected process")
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "esbuild") || !strings.Contains(out, "alone") {
+		t.Errorf("the caption should say which process the second line is:\n%s", out)
+	}
+	if !strings.Contains(out, "▸") {
+		t.Errorf("the selected row should be marked in the process list:\n%s", out)
+	}
+}
+
+// Cycling past the end returns to the whole tree rather than sticking.
+func TestSelectionWrapsBackToTheWholeTree(t *testing.T) {
+	f := source()
+	m := loaded(t, f)
+
+	for range len(f.summary.Processes) + 1 {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = next.(Model)
+	}
+	if m.selected != -1 || m.selectedPID != 0 {
+		t.Errorf("selection should wrap back to the tree, got %d / pid %d", m.selected, m.selectedPID)
+	}
+	if m.selectedLine != nil {
+		t.Error("the overlay should be cleared when no process is selected")
+	}
+}
+
+// The breakdown is re-sorted on every refresh, so a selection that followed the
+// row index would slide onto whichever process happens to be busiest now.
+func TestSelectionFollowsThePIDNotTheRow(t *testing.T) {
+	f := source()
+	m := loaded(t, f)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	if m.selectedPID != 101 {
+		t.Fatalf("setup: selected pid = %d", m.selectedPID)
+	}
+
+	// the two processes swap places
+	f.summary.Processes[0], f.summary.Processes[1] = f.summary.Processes[1], f.summary.Processes[0]
+	for _, msg := range runCmd(m.load()) {
+		m2, _ := m.Update(msg)
+		m = m2.(Model)
+	}
+
+	if m.selectedPID != 101 {
+		t.Errorf("selection moved to pid %d when the list reordered", m.selectedPID)
+	}
+	if m.selected != 1 {
+		t.Errorf("selection index = %d, want 1 (where pid 101 now is)", m.selected)
 	}
 }

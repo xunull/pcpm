@@ -49,6 +49,7 @@ func TestRendersAFrameFromARealStore(t *testing.T) {
 
 	m := New(StoreSource{Store: store, Target: target}, "", 1)
 	m.now = func() time.Time { return now }
+	m.refresh = time.Millisecond
 	m.width, m.height = 96, 32
 
 	// Drive the load exactly as the runtime would, following the batch.

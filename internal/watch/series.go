@@ -57,10 +57,19 @@ const gapFactor = 2
 // average across it instead of a spike, and what lets the same data answer at
 // any bucket size (ADR-0008).
 func (s *Store) Series(targetID int64, from, to time.Time, bucket time.Duration) ([]Point, error) {
-	if bucket <= 0 {
-		bucket = time.Second
-	}
-	// Reach one sampling interval before the window: a rate needs the reading
+	return s.series(targetID, 0, from, to, bucket)
+}
+
+// SeriesOfProcess is Series narrowed to one process in the tree, so a chart can
+// show what a single member contributes against the whole. A pid of 0 means the
+// whole tree.
+func (s *Store) SeriesOfProcess(targetID int64, pid int32, from, to time.Time, bucket time.Duration) ([]Point, error) {
+	return s.series(targetID, pid, from, to, bucket)
+}
+
+func (s *Store) series(targetID int64, only int32, from, to time.Time, bucket time.Duration) ([]Point, error) {
+	bucket = clampBucket(bucket)
+	// Reach one sampling interval before the window: a rate needs the sample
 	// that precedes the first one inside it, or the window's opening bucket has
 	// nothing to subtract from and silently disappears.
 	samples, err := s.SamplesBetween(targetID, from.Add(-lookback), to)
@@ -78,6 +87,9 @@ func (s *Store) Series(targetID int64, from, to time.Time, bucket time.Duration)
 		if d.at.Before(from) || !d.at.Before(to) {
 			continue
 		}
+		if only != 0 && d.pid != only {
+			continue
+		}
 		key := bucketKey{at: d.at.UnixMilli() / bucket.Milliseconds(), pid: d.pid}
 		sh := acc[key]
 		if sh == nil {
@@ -86,10 +98,20 @@ func (s *Store) Series(targetID int64, from, to time.Time, bucket time.Duration)
 		}
 		sh.cpuSeconds += d.cpuSeconds
 		sh.span += d.span
-		sh.rss = d.rss // the bucket's latest reading for this process
+		sh.rss = d.rss // the bucket's latest sample for this process
 		gaps[key.at] = gaps[key.at] || d.gap
 	}
 	return buildPoints(acc, gaps, bucket), nil
+}
+
+// clampBucket holds a bucket to something the stored resolution can honour.
+// Times are kept in milliseconds, so a finer bucket cannot be delivered — and
+// dividing by its zero millisecond count would panic.
+func clampBucket(bucket time.Duration) time.Duration {
+	if bucket < time.Millisecond {
+		return time.Millisecond
+	}
+	return bucket
 }
 
 // bucketKey identifies one process's contribution to one bucket.
@@ -147,7 +169,7 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 	return out
 }
 
-// lookback is how far before a window's start to reach for the reading a rate
+// lookback is how far before a window's start to reach for the sample a rate
 // needs to subtract from. It is generous on purpose: too short only costs the
 // window's first bucket, and reading a few extra rows is cheap.
 const lookback = 2 * time.Minute
@@ -193,11 +215,41 @@ func cpuDeltas(samples []Sample) []delta {
 				cpuSeconds: used,
 				span:       span,
 				rss:        cur.RSSBytes,
-				gap:        span > gapFactor*DefaultSampleInterval,
 			})
 		}
 	}
+	markGaps(out)
 	return out
+}
+
+// markGaps flags the intervals that are far longer than this data's own
+// cadence.
+//
+// The threshold is taken from the samples rather than from the default
+// interval, because the interval is a configuration key: a collector sampling
+// every thirty seconds is not producing a gap every thirty seconds, and judging
+// it against a compiled-in five would report one unbroken hole.
+func markGaps(deltas []delta) {
+	cadence := DefaultSampleInterval
+	if len(deltas) >= 2 {
+		spans := make([]time.Duration, len(deltas))
+		for i, d := range deltas {
+			spans[i] = d.span
+		}
+		slices.Sort(spans)
+		// The median, not the mean: a handful of real gaps must not drag the
+		// baseline up to where they stop looking like gaps.
+		if median := spans[len(spans)/2]; median > 0 {
+			cadence = median
+		}
+	}
+	// Fewer than two intervals says nothing about cadence, so the default is
+	// the only thing left to judge against. That is a fallback, not the rule —
+	// using it when the data can speak for itself is what made a thirty-second
+	// collector look like one unbroken hole.
+	for i := range deltas {
+		deltas[i].gap = deltas[i].span > gapFactor*cadence
+	}
 }
 
 // Summary reduces a target's history over a window to the figures a person asks
@@ -216,6 +268,12 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 	sum := Summary{Samples: len(samples)}
 	if len(samples) > 0 {
 		sum.First, sum.Last = samples[0].At, samples[len(samples)-1].At
+	} else if len(points) > 0 {
+		// Raw samples have aged out but the rollups still cover the window, so
+		// the summary reports what the charts are drawn from. Saying "no
+		// samples" beside a chart showing 20%% would be worse than either.
+		sum.Samples = len(points)
+		sum.First, sum.Last = points[0].At, points[len(points)-1].At
 	}
 	for _, p := range points {
 		sum.PeakCPUPercent = max(sum.PeakCPUPercent, p.CPUPercent)
@@ -226,7 +284,14 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 		sum.CurrentCPUPercent = last.CPUPercent
 		sum.CurrentRSSBytes = last.RSSBytes
 	}
-	sum.Processes = processBreakdown(samples)
+	if len(samples) > 0 {
+		sum.Processes = processBreakdown(samples)
+	} else {
+		sum.Processes, err = s.rolledBreakdown(targetID, from, to, bucket)
+		if err != nil {
+			return Summary{}, err
+		}
+	}
 	return sum, nil
 }
 
@@ -266,7 +331,14 @@ func processBreakdown(samples []Sample) []ProcessUsage {
 		}
 		out = append(out, u)
 	}
-	slices.SortFunc(out, func(a, b ProcessUsage) int {
+	sortByBusiest(out)
+	return out
+}
+
+// sortByBusiest orders a breakdown with the heaviest process first: the point
+// of looking at one is to find what is actually doing the work.
+func sortByBusiest(usage []ProcessUsage) {
+	slices.SortFunc(usage, func(a, b ProcessUsage) int {
 		if a.CPUPercent != b.CPUPercent {
 			if a.CPUPercent > b.CPUPercent {
 				return -1
@@ -275,5 +347,4 @@ func processBreakdown(samples []Sample) []ProcessUsage {
 		}
 		return int(a.PID - b.PID)
 	})
-	return out
 }

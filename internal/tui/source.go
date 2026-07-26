@@ -19,6 +19,8 @@ type StoreSource struct {
 	Target watch.Target
 }
 
+// Status asks the machine, not the record: a target that exits while the view
+// is open should start saying so at the next refresh.
 func (s StoreSource) Status() (watch.Status, error) {
 	procs, err := proc.Collect()
 	if err != nil {
@@ -27,10 +29,18 @@ func (s StoreSource) Status() (watch.Status, error) {
 	return watch.Status{Target: s.Target, Running: s.Target.Running(proc.NewIndex(procs))}, nil
 }
 
+// Series is the whole tree, answered from raw samples or rollups depending on
+// how far back the window reaches.
 func (s StoreSource) Series(from, to time.Time, bucket time.Duration) ([]watch.Point, error) {
 	return s.Store.SeriesFor(s.Target.ID, from, to, bucket)
 }
 
+// SeriesOfProcess is one member of the tree over the same window.
+func (s StoreSource) SeriesOfProcess(pid int32, from, to time.Time, bucket time.Duration) ([]watch.Point, error) {
+	return s.Store.SeriesOfProcess(s.Target.ID, pid, from, to, bucket)
+}
+
+// Summary reduces the window to the figures the header and process list show.
 func (s StoreSource) Summary(from, to time.Time, bucket time.Duration) (watch.Summary, error) {
 	return s.Store.Summary(s.Target.ID, from, to, bucket)
 }

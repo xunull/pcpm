@@ -2,6 +2,7 @@ package watch
 
 import (
 	"database/sql"
+	"errors"
 	"slices"
 	"time"
 )
@@ -31,16 +32,13 @@ const rawWindowLimit = 6 * time.Hour
 // the counter. Averaging a counter and then differencing it gives a number with
 // no meaning; summing the deltas within a bucket gives exactly the CPU consumed
 // during it (ADR-0008).
-func (s *Store) Rollup(from, to time.Time, bucket time.Duration) (int, error) {
+func (s *Store) Rollup(to time.Time, bucket time.Duration) (int, error) {
 	if bucket <= 0 {
 		bucket = DefaultRollupInterval
 	}
-	watermark, err := s.rollupWatermark()
+	from, err := s.rollupWatermark()
 	if err != nil {
 		return 0, err
-	}
-	if watermark.After(from) {
-		from = watermark
 	}
 	// A bucket is only summarised once it can no longer gain samples.
 	cutoff := to.Truncate(bucket)
@@ -48,6 +46,25 @@ func (s *Store) Rollup(from, to time.Time, bucket time.Duration) (int, error) {
 		return 0, nil
 	}
 
+	written, err := s.rollupRange(from, cutoff, bucket)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.markRolledUpTo(cutoff); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
+// rollupAt summarises a range at a given resolution without touching the
+// watermark, so a second resolution can be built alongside the primary one.
+func (s *Store) rollupAt(from, to time.Time, bucket time.Duration) error {
+	_, err := s.rollupRange(from, to, clampBucket(bucket))
+	return err
+}
+
+// rollupRange writes the summaries for one range at one resolution.
+func (s *Store) rollupRange(from, cutoff time.Time, bucket time.Duration) (int, error) {
 	targets, err := s.Targets()
 	if err != nil {
 		return 0, err
@@ -74,7 +91,7 @@ func (s *Store) Rollup(from, to time.Time, bucket time.Duration) (int, error) {
 
 	written := 0
 	for _, t := range targets {
-		// Reach back a little so the first delta in the window has the reading
+		// Reach back a little so the first delta in the window has the sample
 		// before it to subtract from.
 		samples, err := s.SamplesBetween(t.ID, from.Add(-lookback), cutoff)
 		if err != nil {
@@ -88,13 +105,20 @@ func (s *Store) Rollup(from, to time.Time, bucket time.Duration) (int, error) {
 			written++
 		}
 	}
-	if err := s.setRollupWatermark(tx, cutoff); err != nil {
-		return 0, err
-	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return written, nil
+}
+
+// markRolledUpTo records how far summarising has got, so the next pass resumes
+// rather than rescanning.
+func (s *Store) markRolledUpTo(at time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT INTO meta (key, value) VALUES ('rollup_watermark', ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		at.UnixMilli())
+	return err
 }
 
 // bucketed is one process's usage within one bucket, ready to store.
@@ -128,7 +152,7 @@ func aggregate(deltas []delta, from, to time.Time, bucket time.Duration) []bucke
 		}
 		b.cpuSeconds += d.cpuSeconds
 		b.span += d.span
-		b.rssBytes = d.rss // the bucket's latest reading
+		b.rssBytes = d.rss // the bucket's latest sample
 	}
 
 	out := make([]bucketed, 0, len(acc))
@@ -141,15 +165,8 @@ func aggregate(deltas []delta, from, to time.Time, bucket time.Duration) []bucke
 
 // RolledSeries answers the same question as Series, from the rollup table.
 func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Duration) ([]Point, error) {
-	if bucket <= 0 {
-		bucket = DefaultRollupInterval
-	}
-	rows, err := s.db.Query(
-		`SELECT at, pid, cpu_seconds, rss_bytes, span_ms
-		 FROM rollup
-		 WHERE target_id = ? AND at >= ? AND at < ?
-		 ORDER BY at`,
-		targetID, from.UnixMilli(), to.UnixMilli())
+	bucket = clampBucket(bucket)
+	rows, err := s.rolledRows(targetID, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -164,9 +181,10 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 		var (
 			atMS, spanMS, rss int64
 			pid               int32
+			name              string
 			cpuSeconds        float64
 		)
-		if err := rows.Scan(&atMS, &pid, &cpuSeconds, &rss, &spanMS); err != nil {
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS); err != nil {
 			return nil, err
 		}
 		key := bucketKey{at: atMS / bucket.Milliseconds(), pid: pid}
@@ -183,6 +201,72 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 		return nil, err
 	}
 	return buildPoints(acc, nil, bucket), nil
+}
+
+// rolledRows reads the stored summaries covering a window.
+//
+// Only rows at the resolution they were written at are read: the table is keyed
+// by bucket width so several can coexist, and mixing them would count the same
+// period once per resolution.
+func (s *Store) rolledRows(targetID int64, from, to time.Time) (*sql.Rows, error) {
+	return s.db.Query(
+		`SELECT at, pid, name, cpu_seconds, rss_bytes, span_ms
+		 FROM rollup
+		 WHERE target_id = ? AND bucket_ms = ? AND at >= ? AND at < ?
+		 ORDER BY at`,
+		targetID, DefaultRollupInterval.Milliseconds(), from.UnixMilli(), to.UnixMilli())
+}
+
+// rolledBreakdown attributes a window's usage to individual processes using the
+// stored summaries, for windows whose raw Samples have aged out.
+func (s *Store) rolledBreakdown(targetID int64, from, to time.Time, bucket time.Duration) ([]ProcessUsage, error) {
+	rows, err := s.rolledRows(targetID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type running struct {
+		name       string
+		cpuSeconds float64
+		span       time.Duration
+		rss        int64
+	}
+	totals := map[int32]*running{}
+	for rows.Next() {
+		var (
+			atMS, spanMS, rss int64
+			pid               int32
+			name              string
+			cpuSeconds        float64
+		)
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS); err != nil {
+			return nil, err
+		}
+		r := totals[pid]
+		if r == nil {
+			r = &running{}
+			totals[pid] = r
+		}
+		r.name = name
+		r.cpuSeconds += cpuSeconds
+		r.span += time.Duration(spanMS) * time.Millisecond
+		r.rss = rss
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]ProcessUsage, 0, len(totals))
+	for pid, r := range totals {
+		u := ProcessUsage{PID: pid, Name: r.name, RSSBytes: r.rss}
+		if r.span > 0 {
+			u.CPUPercent = r.cpuSeconds / r.span.Seconds() * 100
+		}
+		out = append(out, u)
+	}
+	sortByBusiest(out)
+	return out, nil
 }
 
 // SeriesFor answers a window from whichever resolution suits it. Callers ask
@@ -234,17 +318,14 @@ func (s *Store) Retain(now time.Time, rawFor, rollupFor time.Duration) (int, err
 func (s *Store) rollupWatermark() (time.Time, error) {
 	var ms int64
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'rollup_watermark'`).Scan(&ms)
-	if err != nil {
-		// No watermark yet: nothing has been rolled up.
+	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing has been rolled up yet.
 		return time.Time{}, nil
 	}
+	if err != nil {
+		// Anything else is a real failure. Treating it as "no watermark" would
+		// silently turn every pass into a full rescan.
+		return time.Time{}, err
+	}
 	return time.UnixMilli(ms), nil
-}
-
-func (s *Store) setRollupWatermark(tx *sql.Tx, at time.Time) error {
-	_, err := tx.Exec(
-		`INSERT INTO meta (key, value) VALUES ('rollup_watermark', ?)
-		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-		at.UnixMilli())
-	return err
 }

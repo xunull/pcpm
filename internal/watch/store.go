@@ -116,7 +116,6 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
 
 // migrate applies every migration the database has not seen yet.
@@ -183,11 +182,23 @@ func (s *Store) StopTarget(pid int32, now time.Time) (int, error) {
 	return int(n), err
 }
 
+// targetColumns is the projection every target query reads, in the order
+// scanTarget expects.
+const targetColumns = `id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at`
+
 // Targets returns every target, watched or stopped, oldest first.
 func (s *Store) Targets() ([]Target, error) {
-	rows, err := s.db.Query(
-		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at
-		 FROM target ORDER BY added_at, id`)
+	return s.targetsWhere("")
+}
+
+// targetsWhere reads the targets matching a condition, oldest first. The
+// condition is a literal from this package, never anything a user supplied.
+func (s *Store) targetsWhere(condition string) ([]Target, error) {
+	query := `SELECT ` + targetColumns + ` FROM target `
+	if condition != "" {
+		query += `WHERE ` + condition + ` `
+	}
+	rows, err := s.db.Query(query + `ORDER BY added_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -207,8 +218,8 @@ func (s *Store) Targets() ([]Target, error) {
 // targetOf reads back the target for one process.
 func (s *Store) targetOf(pid int32, created time.Time) (Target, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at
-		 FROM target WHERE pid = ? AND created = ?`, pid, created.UnixMilli())
+		`SELECT `+targetColumns+` FROM target WHERE pid = ? AND created = ?`,
+		pid, created.UnixMilli())
 	t, err := scanTarget(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Target{}, fmt.Errorf("target for pid %d disappeared immediately after being stored", pid)

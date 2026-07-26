@@ -41,7 +41,6 @@ type Machine interface {
 // Host measures the machine pcpm is running on.
 type Host struct{}
 
-// Snapshot enumerates every process on the host.
 func (Host) Snapshot() ([]proc.Process, error) { return proc.Collect() }
 
 // Usage reads one process's cumulative CPU time and resident memory.
@@ -101,7 +100,6 @@ type Collector struct {
 	lastDiscovery time.Time
 }
 
-// NewCollector returns a collector measuring the given machine into the store.
 func NewCollector(store *Store, machine Machine) *Collector {
 	return &Collector{
 		store:               store,
@@ -141,8 +139,8 @@ func (c *Collector) Tick() error {
 
 	sampled, ended := 0, 0
 	for _, t := range targets {
-		alive := c.sampleTarget(t, now)
-		if alive == 0 {
+		result := c.sampleTarget(t, now)
+		if result.alive == 0 {
 			// Every process in the tree is gone. Record when, and stop
 			// measuring it; what it did beforehand stays.
 			if err := c.store.MarkEnded(t.ID, now); err != nil {
@@ -152,7 +150,7 @@ func (c *Collector) Tick() error {
 			ended++
 			continue
 		}
-		sampled += alive
+		sampled += result.stored
 	}
 
 	c.report(fmt.Sprintf("%s  %d target(s), %d process(es) sampled, %d ended",
@@ -181,7 +179,7 @@ func (c *Collector) maintain(now time.Time) error {
 	// Roll up only what can no longer change: a bucket still receiving samples
 	// would be summarised too early and then have to be corrected.
 	settled := now.Add(-c.RollupInterval)
-	rolled, err := c.store.Rollup(time.Time{}, settled, c.RollupInterval)
+	rolled, err := c.store.Rollup(settled, c.RollupInterval)
 	if err != nil {
 		return err
 	}
@@ -223,26 +221,42 @@ func (c *Collector) discover(targets []Target) error {
 	for _, t := range targets {
 		// A PID present but started at another time is a different process that
 		// reused the number; its tree is not this target's.
-		if !t.Running(ix) {
-			fresh[t.ID] = nil
+		if t.Running(ix) {
+			for _, pid := range ix.TreeMembers(t.PID) {
+				if p, ok := ix.Lookup(pid); ok {
+					fresh[t.ID] = append(fresh[t.ID], p)
+				}
+			}
 			continue
 		}
-		for _, pid := range ix.TreeMembers(t.PID) {
-			if p, ok := ix.Lookup(pid); ok {
-				fresh[t.ID] = append(fresh[t.ID], p)
-			}
-		}
+		// The root is gone. Its descendants were re-parented, so walking down
+		// from it finds nothing — but they may well still be running, and a
+		// surviving child of a dead launcher is precisely what this tool exists
+		// to notice. Keep the ones from the last pass that are still there.
+		fresh[t.ID] = survivors(c.members[t.ID], ix)
 	}
 	c.members = fresh
 	return nil
 }
 
-// sampleTarget measures every process still in a target's tree, returning how
-// many were measurable. Zero means the tree is gone.
-func (c *Collector) sampleTarget(t Target, now time.Time) int {
+// survivors returns the previously-known members that are still running as the
+// same processes. A PID that is present but started at another time has been
+// recycled and is somebody else's.
+func survivors(known []proc.Process, ix proc.Index) []proc.Process {
+	var out []proc.Process
+	for _, member := range known {
+		if current, ok := ix.Lookup(member.PID); ok && current.Created.Equal(member.Created) {
+			out = append(out, current)
+		}
+	}
+	return out
+}
+
+// sampleTarget measures every process still in a target's tree.
+func (c *Collector) sampleTarget(t Target, now time.Time) sampleResult {
 	members := c.members[t.ID]
 	if len(members) == 0 {
-		return 0
+		return sampleResult{}
 	}
 
 	samples := make([]Sample, 0, len(members))
@@ -262,13 +276,24 @@ func (c *Collector) sampleTarget(t Target, now time.Time) int {
 		})
 	}
 	if len(samples) == 0 {
-		return 0
+		return sampleResult{}
 	}
 	if err := c.store.SaveSamples(t.ID, now, samples); err != nil {
+		// Report the failure and count nothing stored — but do not return zero,
+		// which the caller reads as "the tree is gone" and would end a target
+		// that is alive and well.
 		c.report(fmt.Sprintf("storing samples for target %d: %v", t.ID, err))
-		return len(samples)
+		return sampleResult{alive: len(samples), stored: 0}
 	}
-	return len(samples)
+	return sampleResult{alive: len(samples), stored: len(samples)}
+}
+
+// sampleResult separates "how many processes are still there" from "how many
+// measurements were written": a storage failure must not be mistaken for a tree
+// that has exited.
+type sampleResult struct {
+	alive  int
+	stored int
 }
 
 // Run collects until ctx is cancelled, returning nil on a clean shutdown. A
