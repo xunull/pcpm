@@ -208,3 +208,60 @@ func TestSummaryBreaksDownByProcess(t *testing.T) {
 		t.Errorf("worker CPU = %.2f%%, want 40%%", sum.Processes[0].CPUPercent)
 	}
 }
+
+// A bucket wider than the sampling interval holds several readings per process.
+// Their elapsed times must add up, not be collapsed to the longest: dividing a
+// bucket's total CPU by one interval's span multiplies the answer by however
+// many samples landed in it. Every long window uses coarse buckets, so this is
+// the normal case, not an edge one.
+func TestSeriesIsCorrectWhenABucketHoldsManySamples(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// two minutes of a steady 20%: 1 CPU-second per 5s interval
+	var points [][2]float64
+	for i := range 25 {
+		points = append(points, [2]float64{float64(i * 5), float64(i)})
+	}
+	seed(t, s, id, base, 100, points)
+
+	fine, err := s.Series(id, base, at(base, 120), 5*time.Second)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	coarse, err := s.Series(id, base, at(base, 120), time.Minute)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+
+	for _, b := range fine {
+		if math.Abs(b.CPUPercent-20) > 0.01 {
+			t.Fatalf("5s bucket at %v: %.2f%%, want 20%%", b.At, b.CPUPercent)
+		}
+	}
+	// The same steady load must read the same at any resolution.
+	for _, b := range coarse {
+		if math.Abs(b.CPUPercent-20) > 0.5 {
+			t.Errorf("60s bucket at %v: %.2f%%, want 20%% — twelve 5s readings were treated as one",
+				b.At, b.CPUPercent)
+		}
+	}
+}
+
+// Two processes each busy for half a bucket are not one process busy
+// throughout, so each contributes its own rate rather than sharing one span.
+func TestSeriesAddsEachProcessOwnRate(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// pid 100 busy in the first half of the minute, pid 101 in the second
+	seed(t, s, id, base, 100, [][2]float64{{0, 0}, {5, 5}})   // 100%
+	seed(t, s, id, base, 101, [][2]float64{{30, 0}, {35, 5}}) // 100%
+
+	got, err := s.Series(id, base, at(base, 60), time.Minute)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 bucket, got %d", len(got))
+	}
+	if math.Abs(got[0].CPUPercent-200) > 0.01 {
+		t.Errorf("CPU = %.2f%%, want 200%% (two processes at 100%% each)", got[0].CPUPercent)
+	}
+}

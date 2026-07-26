@@ -72,46 +72,79 @@ func (s *Store) Series(targetID int64, from, to time.Time, bucket time.Duration)
 		return nil, nil
 	}
 
-	type acc struct {
-		cpuSeconds float64
-		span       time.Duration
-		rss        int64
-		pids       map[int32]bool
-		gap        bool
-	}
-	buckets := map[int64]*acc{}
+	acc := map[bucketKey]*share{}
+	gaps := map[int64]bool{}
 	for _, d := range deltas {
 		if d.at.Before(from) || !d.at.Before(to) {
 			continue
 		}
-		key := d.at.UnixMilli() / bucket.Milliseconds()
-		b := buckets[key]
-		if b == nil {
-			b = &acc{pids: map[int32]bool{}}
-			buckets[key] = b
+		key := bucketKey{at: d.at.UnixMilli() / bucket.Milliseconds(), pid: d.pid}
+		sh := acc[key]
+		if sh == nil {
+			sh = &share{}
+			acc[key] = sh
 		}
-		b.cpuSeconds += d.cpuSeconds
-		b.span = max(b.span, d.span)
-		b.rss += d.rss
-		b.pids[d.pid] = true
-		b.gap = b.gap || d.gap
+		sh.cpuSeconds += d.cpuSeconds
+		sh.span += d.span
+		sh.rss = d.rss // the bucket's latest reading for this process
+		gaps[key.at] = gaps[key.at] || d.gap
+	}
+	return buildPoints(acc, gaps, bucket), nil
+}
+
+// bucketKey identifies one process's contribution to one bucket.
+type bucketKey struct {
+	at  int64 // bucket index
+	pid int32
+}
+
+// share is what one process contributed to one bucket.
+type share struct {
+	cpuSeconds float64
+	span       time.Duration
+	rss        int64
+}
+
+// buildPoints folds per-process contributions into per-bucket points.
+//
+// A process's rate is its own CPU over its own elapsed time, and the tree's is
+// the sum of those — not the tree's total CPU over the bucket's width. The
+// distinction matters whenever a bucket is wider than the sampling interval,
+// which every long window is: two processes each busy for half a bucket are not
+// the same as one busy throughout, and dividing by a single span would silently
+// multiply the answer by the number of samples in the bucket.
+func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Duration) []Point {
+	type total struct {
+		cpuPercent float64
+		rss        int64
+		procs      int
+	}
+	totals := map[int64]*total{}
+	for key, sh := range acc {
+		t := totals[key.at]
+		if t == nil {
+			t = &total{}
+			totals[key.at] = t
+		}
+		if sh.span > 0 {
+			t.cpuPercent += sh.cpuSeconds / sh.span.Seconds() * 100
+		}
+		t.rss += sh.rss
+		t.procs++
 	}
 
-	out := make([]Point, 0, len(buckets))
-	for key, b := range buckets {
-		p := Point{
-			At:       time.UnixMilli(key * bucket.Milliseconds()),
-			RSSBytes: b.rss,
-			Procs:    len(b.pids),
-			Gap:      b.gap,
-		}
-		if b.span > 0 {
-			p.CPUPercent = b.cpuSeconds / b.span.Seconds() * 100
-		}
-		out = append(out, p)
+	out := make([]Point, 0, len(totals))
+	for at, t := range totals {
+		out = append(out, Point{
+			At:         time.UnixMilli(at * bucket.Milliseconds()),
+			CPUPercent: t.cpuPercent,
+			RSSBytes:   t.rss,
+			Procs:      t.procs,
+			Gap:        gaps[at],
+		})
 	}
 	slices.SortFunc(out, func(a, b Point) int { return a.At.Compare(b.At) })
-	return out, nil
+	return out
 }
 
 // lookback is how far before a window's start to reach for the reading a rate
@@ -171,7 +204,7 @@ func cpuDeltas(samples []Sample) []delta {
 // for first, including which process is responsible — a tree figure has to stay
 // decomposable into who produced it.
 func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration) (Summary, error) {
-	points, err := s.Series(targetID, from, to, bucket)
+	points, err := s.SeriesFor(targetID, from, to, bucket)
 	if err != nil {
 		return Summary{}, err
 	}

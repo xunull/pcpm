@@ -79,10 +79,20 @@ type Collector struct {
 	SampleInterval   time.Duration
 	DiscoverInterval time.Duration
 
+	// Maintenance is how often to roll up and drop what has aged out. It runs
+	// far less often than sampling: it exists to keep long windows fast and the
+	// database bounded, neither of which changes by the second.
+	MaintenanceInterval time.Duration
+	RollupInterval      time.Duration
+	RawRetention        time.Duration
+	RollupRetention     time.Duration
+
 	// Now is the clock, injectable so tests need not sleep.
 	Now func() time.Time
 	// Report receives one line per tick. nil discards them.
 	Report func(string)
+
+	lastMaintenance time.Time
 
 	// members caches each target's tree between discovery passes, keyed by
 	// target ID. It holds the processes, not just their PIDs: a Sample records
@@ -94,12 +104,16 @@ type Collector struct {
 // NewCollector returns a collector measuring the given machine into the store.
 func NewCollector(store *Store, machine Machine) *Collector {
 	return &Collector{
-		store:            store,
-		machine:          machine,
-		SampleInterval:   DefaultSampleInterval,
-		DiscoverInterval: DefaultDiscoverInterval,
-		Now:              time.Now,
-		members:          make(map[int64][]proc.Process),
+		store:               store,
+		machine:             machine,
+		SampleInterval:      DefaultSampleInterval,
+		DiscoverInterval:    DefaultDiscoverInterval,
+		MaintenanceInterval: DefaultMaintenanceInterval,
+		RollupInterval:      DefaultRollupInterval,
+		RawRetention:        DefaultRawRetention,
+		RollupRetention:     DefaultRollupRetention,
+		Now:                 time.Now,
+		members:             make(map[int64][]proc.Process),
 	}
 }
 
@@ -143,6 +157,42 @@ func (c *Collector) Tick() error {
 
 	c.report(fmt.Sprintf("%s  %d target(s), %d process(es) sampled, %d ended",
 		now.Format("15:04:05"), len(targets), sampled, ended))
+
+	// Maintenance last: a failure to tidy up must not cost the tick's samples,
+	// which have already been stored.
+	if err := c.maintain(now); err != nil {
+		return fmt.Errorf("maintenance: %w", err)
+	}
+	return nil
+}
+
+// maintain rolls up settled Samples and drops what has aged out, on its own
+// slow schedule. Without it, long-window queries degrade into full table scans
+// and the database grows without bound (ADR-0007).
+func (c *Collector) maintain(now time.Time) error {
+	if c.MaintenanceInterval <= 0 {
+		return nil
+	}
+	if !c.lastMaintenance.IsZero() && now.Sub(c.lastMaintenance) < c.MaintenanceInterval {
+		return nil
+	}
+	c.lastMaintenance = now
+
+	// Roll up only what can no longer change: a bucket still receiving samples
+	// would be summarised too early and then have to be corrected.
+	settled := now.Add(-c.RollupInterval)
+	rolled, err := c.store.Rollup(time.Time{}, settled, c.RollupInterval)
+	if err != nil {
+		return err
+	}
+	dropped, err := c.store.Retain(now, c.RawRetention, c.RollupRetention)
+	if err != nil {
+		return err
+	}
+	if rolled > 0 || dropped > 0 {
+		c.report(fmt.Sprintf("%s  maintenance: %d bucket(s) rolled up, %d row(s) dropped",
+			now.Format("15:04:05"), rolled, dropped))
+	}
 	return nil
 }
 

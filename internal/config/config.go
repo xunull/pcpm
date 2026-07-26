@@ -32,6 +32,16 @@ type Config struct {
 type WatchConfig struct {
 	SampleInterval   time.Duration
 	DiscoverInterval time.Duration
+
+	// MaintenanceInterval is how often to roll up settled Samples and drop what
+	// has aged out. RawRetention and RollupRetention are how long each
+	// resolution is kept: raw Samples answer "what exactly happened yesterday
+	// afternoon", rollups answer "has this been creeping up for a fortnight" at
+	// a fraction of the rows.
+	MaintenanceInterval time.Duration
+	RollupInterval      time.Duration
+	RawRetention        time.Duration
+	RollupRetention     time.Duration
 }
 
 // Load resolves configuration with precedence flag > env (PCPM_*) > config file
@@ -47,6 +57,10 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	// cannot drift apart on what "the default" is.
 	v.SetDefault("watch.sample_interval", watch.DefaultSampleInterval)
 	v.SetDefault("watch.discover_interval", watch.DefaultDiscoverInterval)
+	v.SetDefault("watch.maintenance_interval", watch.DefaultMaintenanceInterval)
+	v.SetDefault("watch.rollup_interval", watch.DefaultRollupInterval)
+	v.SetDefault("watch.raw_retention", watch.DefaultRawRetention)
+	v.SetDefault("watch.rollup_retention", watch.DefaultRollupRetention)
 
 	v.SetEnvPrefix("PCPM")
 	v.AutomaticEnv()
@@ -76,8 +90,12 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	return Config{
 		Ignore: ignore,
 		Watch: WatchConfig{
-			SampleInterval:   v.GetDuration("watch.sample_interval"),
-			DiscoverInterval: v.GetDuration("watch.discover_interval"),
+			SampleInterval:      v.GetDuration("watch.sample_interval"),
+			DiscoverInterval:    v.GetDuration("watch.discover_interval"),
+			MaintenanceInterval: v.GetDuration("watch.maintenance_interval"),
+			RollupInterval:      v.GetDuration("watch.rollup_interval"),
+			RawRetention:        v.GetDuration("watch.raw_retention"),
+			RollupRetention:     v.GetDuration("watch.rollup_retention"),
 		},
 	}, nil
 }

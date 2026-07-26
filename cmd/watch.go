@@ -224,6 +224,10 @@ func runWatchDaemon(cmd *cobra.Command, _ []string) error {
 	collector := watch.NewCollector(store, watch.Host{})
 	collector.SampleInterval = cfg.Watch.SampleInterval
 	collector.DiscoverInterval = cfg.Watch.DiscoverInterval
+	collector.MaintenanceInterval = cfg.Watch.MaintenanceInterval
+	collector.RollupInterval = cfg.Watch.RollupInterval
+	collector.RawRetention = cfg.Watch.RawRetention
+	collector.RollupRetention = cfg.Watch.RollupRetention
 	if d, _ := cmd.Flags().GetDuration("sample-interval"); d > 0 {
 		collector.SampleInterval = d
 	}

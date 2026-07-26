@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 3
+const schemaVersion = 5
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -55,6 +55,34 @@ var migrations = []string{
 	// watching: a target can end without being stopped, and be stopped while
 	// still running.
 	`ALTER TABLE target ADD COLUMN ended_at INTEGER`,
+
+	// 3 -> 4: downsampled history.
+	//
+	// A rollup row carries the CPU seconds consumed during its bucket and how
+	// much time that covered — both additive, so a coarser bucket is a sum of
+	// finer ones. Storing a percentage instead would not survive being
+	// re-aggregated (ADR-0008).
+	//
+	// bucket_ms is part of the key so more than one resolution can coexist
+	// later without a migration.
+	`CREATE TABLE rollup (
+		target_id   INTEGER NOT NULL REFERENCES target(id),
+		at          INTEGER NOT NULL, -- bucket start, unix millis
+		bucket_ms   INTEGER NOT NULL, -- bucket width
+		pid         INTEGER NOT NULL,
+		name        TEXT    NOT NULL,
+		cpu_seconds REAL    NOT NULL, -- consumed during the bucket, not cumulative
+		rss_bytes   INTEGER NOT NULL,
+		span_ms     INTEGER NOT NULL, -- time the samples actually covered
+		PRIMARY KEY (target_id, at, bucket_ms, pid)
+	) WITHOUT ROWID`,
+
+	// 4 -> 5: bookkeeping pcpm keeps about itself, such as how far the rollup
+	// has got — which is what makes each rollup pass incremental.
+	`CREATE TABLE meta (
+		key   TEXT    PRIMARY KEY,
+		value INTEGER NOT NULL
+	) WITHOUT ROWID`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a
