@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,14 +58,71 @@ var watchRmCmd = &cobra.Command{
 	RunE: runWatchRm,
 }
 
+var watchDaemonCmd = &cobra.Command{
+	Use:   "daemon",
+	Short: "Run the collector in the foreground",
+	Long: "Run the collector in the foreground, measuring every Watch Target until " +
+		"interrupted. It re-reads which targets to measure from the database each tick, " +
+		"so targets added or stopped elsewhere take effect within one tick.",
+	Args: cobra.NoArgs,
+	RunE: runWatchDaemon,
+}
+
 func init() {
 	watchCmd.PersistentFlags().String("db", "",
 		"database file (default: $XDG_STATE_HOME/pcpm/pcpm.db)")
 	watchAddCmd.Flags().StringP("output", "o", "table", "output format: table | json")
 	watchLsCmd.Flags().StringP("output", "o", "table", "output format: table | json")
+	watchDaemonCmd.Flags().Duration("sample-interval", 0,
+		"how often to measure (default: 5s, or watch.sample_interval in config)")
+	watchDaemonCmd.Flags().Duration("discover-interval", 0,
+		"how often to re-walk the process table for tree members (default: 30s)")
+	watchDaemonCmd.Flags().Bool("quiet", false, "do not report each tick")
 
-	watchCmd.AddCommand(watchAddCmd, watchLsCmd, watchRmCmd)
+	watchCmd.AddCommand(watchAddCmd, watchLsCmd, watchRmCmd, watchDaemonCmd)
 	rootCmd.AddCommand(watchCmd)
+}
+
+func runWatchDaemon(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(cmd.Flags(), configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	store, err := openStore(cmd)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	collector := watch.NewCollector(store, watch.Host{})
+	collector.SampleInterval = cfg.Watch.SampleInterval
+	collector.DiscoverInterval = cfg.Watch.DiscoverInterval
+	if d, _ := cmd.Flags().GetDuration("sample-interval"); d > 0 {
+		collector.SampleInterval = d
+	}
+	if d, _ := cmd.Flags().GetDuration("discover-interval"); d > 0 {
+		collector.DiscoverInterval = d
+	}
+
+	out := cmd.OutOrStdout()
+	if quiet, _ := cmd.Flags().GetBool("quiet"); !quiet {
+		collector.Report = func(line string) { fmt.Fprintln(out, line) }
+	}
+
+	// Interrupt cancels the context, so the run stops between ticks and never
+	// mid-write. Stopping the notifier restores default signal handling, so a
+	// second interrupt still kills a wedged process.
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Fprintf(out, "collecting every %s, re-walking the process table every %s; interrupt to stop\n",
+		collector.SampleInterval, collector.DiscoverInterval)
+	if err := collector.Run(ctx); err != nil {
+		return fmt.Errorf("collecting: %w", err)
+	}
+	fmt.Fprintln(out, "stopped")
+	return nil
 }
 
 func runWatchAdd(cmd *cobra.Command, args []string) error {

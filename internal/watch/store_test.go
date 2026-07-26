@@ -1,6 +1,8 @@
 package watch
 
 import (
+	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -191,5 +193,68 @@ func TestOpenIsIdempotentAcrossProcesses(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("re-opening lost the data: want 1 target, got %d", len(got))
+	}
+}
+
+// A database written by an older pcpm must be upgraded in place, keeping what
+// is in it. This walks the real migration path rather than asserting on the
+// version number alone.
+func TestMigrationUpgradesAnOlderDatabaseInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pcpm.db")
+	created := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	// Build a database at version 1: the migrations up to that point, and
+	// nothing the later ones added.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("opening: %v", err)
+	}
+	if _, err := old.Exec(migrations[0]); err != nil {
+		t.Fatalf("applying migration 1: %v", err)
+	}
+	if _, err := old.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatalf("setting version: %v", err)
+	}
+	if _, err := old.Exec(
+		`INSERT INTO target (pid, created, name, cmdline, cwd, added_at)
+		 VALUES (100, ?, 'bun', 'bun run dev', '/proj', ?)`,
+		created.UnixMilli(), created.UnixMilli()); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a version 1 database: %v", err)
+	}
+	defer s.Close()
+
+	targets, err := s.Targets()
+	if err != nil {
+		t.Fatalf("Targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].PID != 100 {
+		t.Fatalf("migration lost the existing data: %+v", targets)
+	}
+	// and the table the newer schema added is usable
+	if err := s.SaveSamples(targets[0].ID, created, []Sample{{PID: 100, Created: created}}); err != nil {
+		t.Errorf("the upgraded database cannot take samples: %v", err)
+	}
+}
+
+// A database from a newer pcpm must be refused, not misread.
+func TestOpenRefusesANewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pcpm.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("opening: %v", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion+1)); err != nil {
+		t.Fatalf("setting version: %v", err)
+	}
+	db.Close()
+
+	if _, err := Open(path); err == nil {
+		t.Error("Open accepted a database from a newer pcpm; want a clear refusal")
 	}
 }

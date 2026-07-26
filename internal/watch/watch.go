@@ -28,10 +28,18 @@ type Target struct {
 	// Stopping ends the watching, not the record: what the target was doing
 	// before is still worth being able to ask about.
 	StoppedAt *time.Time
+	// EndedAt is when the collector saw the target's last process exit, or nil
+	// while something in the tree is still running. It is a separate fact from
+	// StoppedAt: a target can end without being stopped, and be stopped while
+	// still running.
+	EndedAt *time.Time
 }
 
 // Watching reports whether pcpm is still collecting for this target.
 func (t Target) Watching() bool { return t.StoppedAt == nil }
+
+// Ended reports whether the collector has seen this target's last process exit.
+func (t Target) Ended() bool { return t.EndedAt != nil }
 
 // Running reports whether the target's process is still on the machine. A PID
 // that is present but started at a different time is a different process that

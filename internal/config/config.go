@@ -7,9 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+
+	"github.com/xunull/pcpm/internal/watch"
 )
 
 // Config is the resolved configuration pcpm's commands run against.
@@ -18,6 +21,17 @@ type Config struct {
 	// suppressed from output — how a user silences a long-running job they
 	// keep on purpose.
 	Ignore []string
+
+	// Watch is the collector's schedule.
+	Watch WatchConfig
+}
+
+// WatchConfig is how often the collector works. Raising SampleInterval trades
+// resolution for storage; lowering DiscoverInterval catches shorter-lived child
+// processes at the cost of walking the whole process table more often.
+type WatchConfig struct {
+	SampleInterval   time.Duration
+	DiscoverInterval time.Duration
 }
 
 // Load resolves configuration with precedence flag > env (PCPM_*) > config file
@@ -29,6 +43,10 @@ type Config struct {
 func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v := viper.New()
 	v.SetDefault("ignore", []string{})
+	// The collector's defaults live with the collector, so config and code
+	// cannot drift apart on what "the default" is.
+	v.SetDefault("watch.sample_interval", watch.DefaultSampleInterval)
+	v.SetDefault("watch.discover_interval", watch.DefaultDiscoverInterval)
 
 	v.SetEnvPrefix("PCPM")
 	v.AutomaticEnv()
@@ -55,7 +73,13 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 		flagIgnore, _ := flags.GetStringArray("ignore")
 		ignore = append(ignore, flagIgnore...)
 	}
-	return Config{Ignore: ignore}, nil
+	return Config{
+		Ignore: ignore,
+		Watch: WatchConfig{
+			SampleInterval:   v.GetDuration("watch.sample_interval"),
+			DiscoverInterval: v.GetDuration("watch.discover_interval"),
+		},
+	}, nil
 }
 
 // DefaultDir is the per-user directory pcpm searches for config.yaml:

@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 1
+const schemaVersion = 3
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -31,6 +31,30 @@ var migrations = []string{
 		stopped_at INTEGER,          -- NULL while pcpm is still watching
 		UNIQUE (pid, created)        -- (PID, Created) identifies the process
 	)`,
+
+	// 1 -> 2: the Samples. One row per process per tick, never per tree, so a
+	// tree figure stays decomposable into who was responsible for it.
+	//
+	// WITHOUT ROWID with (target_id, at, pid) as the key: rows are then stored
+	// in the order every query wants to read them — one target, a time window,
+	// ascending — and the key doubles as the uniqueness that makes re-saving a
+	// tick idempotent. Measured at ~38 bytes/row.
+	`CREATE TABLE sample (
+		target_id   INTEGER NOT NULL REFERENCES target(id),
+		at          INTEGER NOT NULL, -- tick time, unix millis
+		pid         INTEGER NOT NULL,
+		created     INTEGER NOT NULL, -- pins the process against PID reuse
+		name        TEXT    NOT NULL,
+		cpu_seconds REAL    NOT NULL, -- cumulative counter, not a rate (ADR-0008)
+		rss_bytes   INTEGER NOT NULL,
+		PRIMARY KEY (target_id, at, pid)
+	) WITHOUT ROWID`,
+
+	// 2 -> 3: when the target's last process exited, as the collector observed
+	// it. Distinct from stopped_at, which is the user's decision to stop
+	// watching: a target can end without being stopped, and be stopped while
+	// still running.
+	`ALTER TABLE target ADD COLUMN ended_at INTEGER`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a
@@ -108,7 +132,7 @@ func (s *Store) AddTarget(t Target, now time.Time) (Target, error) {
 	_, err := s.db.Exec(
 		`INSERT INTO target (pid, created, name, cmdline, cwd, added_at, stopped_at)
 		 VALUES (?, ?, ?, ?, ?, ?, NULL)
-		 ON CONFLICT (pid, created) DO UPDATE SET stopped_at = NULL`,
+		 ON CONFLICT (pid, created) DO UPDATE SET stopped_at = NULL, ended_at = NULL`,
 		t.PID, t.Created.UnixMilli(), t.Name, t.Cmdline, t.Cwd, now.UnixMilli())
 	if err != nil {
 		return Target{}, err
@@ -134,7 +158,7 @@ func (s *Store) StopTarget(pid int32, now time.Time) (int, error) {
 // Targets returns every target, watched or stopped, oldest first.
 func (s *Store) Targets() ([]Target, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at
+		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at
 		 FROM target ORDER BY added_at, id`)
 	if err != nil {
 		return nil, err
@@ -155,7 +179,7 @@ func (s *Store) Targets() ([]Target, error) {
 // targetOf reads back the target for one process.
 func (s *Store) targetOf(pid int32, created time.Time) (Target, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at
+		`SELECT id, pid, created, name, cmdline, cwd, added_at, stopped_at, ended_at
 		 FROM target WHERE pid = ? AND created = ?`, pid, created.UnixMilli())
 	t, err := scanTarget(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -175,15 +199,23 @@ func scanTarget(sc scanner) (Target, error) {
 		createdMS int64
 		addedMS   int64
 		stoppedMS sql.NullInt64
+		endedMS   sql.NullInt64
 	)
-	if err := sc.Scan(&t.ID, &t.PID, &createdMS, &t.Name, &t.Cmdline, &t.Cwd, &addedMS, &stoppedMS); err != nil {
+	if err := sc.Scan(&t.ID, &t.PID, &createdMS, &t.Name, &t.Cmdline, &t.Cwd, &addedMS, &stoppedMS, &endedMS); err != nil {
 		return Target{}, err
 	}
 	t.Created = time.UnixMilli(createdMS)
 	t.AddedAt = time.UnixMilli(addedMS)
-	if stoppedMS.Valid {
-		stopped := time.UnixMilli(stoppedMS.Int64)
-		t.StoppedAt = &stopped
-	}
+	t.StoppedAt = optionalTime(stoppedMS)
+	t.EndedAt = optionalTime(endedMS)
 	return t, nil
+}
+
+// optionalTime turns a nullable millisecond column into an optional time.
+func optionalTime(ms sql.NullInt64) *time.Time {
+	if !ms.Valid {
+		return nil
+	}
+	t := time.UnixMilli(ms.Int64)
+	return &t
 }
