@@ -15,6 +15,7 @@ import (
 	"github.com/xunull/pcpm/internal/config"
 	"github.com/xunull/pcpm/internal/proc"
 	"github.com/xunull/pcpm/internal/render"
+	"github.com/xunull/pcpm/internal/tui"
 	"github.com/xunull/pcpm/internal/watch"
 )
 
@@ -96,6 +97,7 @@ func init() {
 	watchShowCmd.Flags().Duration("window", time.Hour, "how far back to report")
 	watchShowCmd.Flags().Duration("bucket", 0,
 		"time resolution to aggregate at (default: 1/120th of the window)")
+	watchShowCmd.Flags().Bool("plain", false, "print a text summary instead of opening the interactive view")
 
 	watchCmd.AddCommand(watchAddCmd, watchLsCmd, watchRmCmd, watchShowCmd, watchDaemonCmd)
 	rootCmd.AddCommand(watchCmd)
@@ -134,6 +136,14 @@ func runWatchShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The interactive view is the default; --plain and -o json are for scripts
+	// and for terminals that are not one.
+	plain, _ := cmd.Flags().GetBool("plain")
+	if !plain && format == render.FormatTable && isTerminal(cmd.OutOrStdout()) {
+		home, _ := os.UserHomeDir()
+		return tui.Run(cmd.Context(), tui.StoreSource{Store: store, Target: target}, home, windowIndexFor(window))
+	}
+
 	procs, err := proc.Collect()
 	if err != nil {
 		return fmt.Errorf("collecting processes: %w", err)
@@ -161,6 +171,23 @@ func runWatchShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unhandled output format %v", format)
 	}
 	return nil
+}
+
+// windowIndexFor maps a requested span onto the view's fixed windows, choosing
+// the closest rather than refusing: the interactive view offers a fixed set,
+// and --window is how someone says which of them they meant.
+func windowIndexFor(span time.Duration) int {
+	best, bestDiff := 1, time.Duration(1<<62)
+	for i, w := range tui.Windows {
+		diff := w.Span - span
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < bestDiff {
+			best, bestDiff = i, diff
+		}
+	}
+	return best
 }
 
 // defaultBucket picks a resolution from the window: enough points to show the

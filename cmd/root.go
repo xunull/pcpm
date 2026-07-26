@@ -48,3 +48,11 @@ func terminalWidth(w io.Writer) int {
 	}
 	return width
 }
+
+// isTerminal reports whether w is a terminal. An interactive view has nowhere
+// to draw when output is piped or redirected, so commands fall back to plain
+// text rather than emitting control codes into a file.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
