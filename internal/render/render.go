@@ -266,6 +266,134 @@ func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width in
 	return Grid([]string{"PID", "PGID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
 }
 
+// Bytes renders a byte count the way a person reads memory: three significant
+// figures at most, in the largest unit that keeps the number above 1.
+func Bytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value, exp := float64(n), 0
+	for value >= unit && exp < 4 {
+		value /= unit
+		exp++
+	}
+	suffix := [...]string{"B", "KB", "MB", "GB", "TB"}[exp]
+	if value < 10 {
+		return fmt.Sprintf("%.1f %s", value, suffix)
+	}
+	return fmt.Sprintf("%.0f %s", value, suffix)
+}
+
+// Percent renders a CPU figure. Values are unbounded above 100 — a tree can use
+// more than one core — so the width is not fixed.
+func Percent(p float64) string {
+	if p < 10 {
+		return fmt.Sprintf("%.1f%%", p)
+	}
+	return fmt.Sprintf("%.0f%%", p)
+}
+
+// WatchSummaryText renders a Watch Target's history as a short human report:
+// what it is, whether it is still there, and what it has been consuming — with
+// the per-process breakdown that says which part of the tree is responsible.
+func WatchSummaryText(s watch.Status, sum watch.Summary, window time.Duration, now time.Time, home string, width int) string {
+	var b strings.Builder
+
+	dir := ShortPath(s.Cwd, home, dirColumnWidth)
+	fmt.Fprintf(&b, "%s\n", fit(s.Cmdline, width))
+	if dir != "" {
+		fmt.Fprintf(&b, "%s\n", dir)
+	}
+	fmt.Fprintf(&b, "%s · %s · added %s ago\n\n",
+		watchingLabel(s.Watching()), processLabel(s), Age(now, s.AddedAt))
+
+	if sum.Samples == 0 {
+		fmt.Fprintf(&b, "no samples in the last %s — is the collector running? (pcpm watch daemon)\n", window)
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "window   last %-14s samples %d over %s\n",
+		window, sum.Samples, Age(sum.Last, sum.First))
+	fmt.Fprintf(&b, "cpu      %-14s peak %s\n", Percent(sum.CurrentCPUPercent), Percent(sum.PeakCPUPercent))
+	fmt.Fprintf(&b, "memory   %-14s peak %s\n\n", Bytes(sum.CurrentRSSBytes), Bytes(sum.PeakRSSBytes))
+
+	rows := make([][]string, len(sum.Processes))
+	for i, p := range sum.Processes {
+		rows[i] = []string{
+			strconv.Itoa(int(p.PID)),
+			p.Name,
+			Percent(p.CPUPercent),
+			Bytes(p.RSSBytes),
+		}
+	}
+	b.WriteString(Grid([]string{"PID", "NAME", "CPU", "RSS"}, rows, width))
+	return b.String()
+}
+
+// watchingLabel describes whether pcpm is still collecting.
+func watchingLabel(watching bool) string {
+	if watching {
+		return "watching"
+	}
+	return "not watching"
+}
+
+// processLabel describes what became of the target's processes.
+func processLabel(s watch.Status) string {
+	if s.Running {
+		return "running"
+	}
+	if s.EndedAt != nil {
+		return "ended"
+	}
+	return "gone"
+}
+
+// WatchSummaryJSON renders a Watch Target's history as a JSON object, with the
+// per-process breakdown included.
+func WatchSummaryJSON(s watch.Status, sum watch.Summary, window time.Duration) (string, error) {
+	view := struct {
+		Target     jsonWatchTarget    `json:"target"`
+		WindowSecs float64            `json:"window_seconds"`
+		Samples    int                `json:"samples"`
+		First      string             `json:"first_sample"`
+		Last       string             `json:"last_sample"`
+		CPUPercent float64            `json:"cpu_percent"`
+		PeakCPU    float64            `json:"peak_cpu_percent"`
+		RSSBytes   int64              `json:"rss_bytes"`
+		PeakRSS    int64              `json:"peak_rss_bytes"`
+		Processes  []jsonProcessUsage `json:"processes"`
+	}{
+		Target:     watchTargetView(s),
+		WindowSecs: window.Seconds(),
+		Samples:    sum.Samples,
+		CPUPercent: sum.CurrentCPUPercent,
+		PeakCPU:    sum.PeakCPUPercent,
+		RSSBytes:   sum.CurrentRSSBytes,
+		PeakRSS:    sum.PeakRSSBytes,
+		Processes:  make([]jsonProcessUsage, len(sum.Processes)),
+	}
+	if !sum.First.IsZero() {
+		view.First = sum.First.UTC().Format(time.RFC3339)
+		view.Last = sum.Last.UTC().Format(time.RFC3339)
+	}
+	for i, p := range sum.Processes {
+		view.Processes[i] = jsonProcessUsage{
+			PID: p.PID, Name: p.Name, CPUPercent: p.CPUPercent, RSSBytes: p.RSSBytes,
+		}
+	}
+	return encodeJSON(view)
+}
+
+// jsonProcessUsage is one process's share of a target over the window.
+type jsonProcessUsage struct {
+	PID        int32   `json:"pid"`
+	Name       string  `json:"name"`
+	CPUPercent float64 `json:"cpu_percent"`
+	RSSBytes   int64   `json:"rss_bytes"`
+}
+
 // WatchTargetsTable renders Watch Targets as an aligned table with columns
 // PID / WATCHING / PROCESS / ADDED / DIR / COMMAND.
 //
@@ -387,6 +515,17 @@ func formatPorts(ports []listen.Port) string {
 		parts[i] = s
 	}
 	return strings.Join(parts, ",")
+}
+
+// fit shortens s to width, honouring the convention that a width of zero or
+// less means "do not truncate" — which is what terminalWidth reports when
+// output is piped or redirected. Passing such a width straight to truncate
+// would blank the value instead.
+func fit(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	return truncate(s, width)
 }
 
 // truncate shortens s to at most n bytes, marking any cut with a trailing

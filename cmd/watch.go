@@ -58,6 +58,17 @@ var watchRmCmd = &cobra.Command{
 	RunE: runWatchRm,
 }
 
+var watchShowCmd = &cobra.Command{
+	Use:   "show <pid>",
+	Short: "Report what a Watch Target has been consuming",
+	Long: "Report what a Watch Target and its tree have been consuming over a window, " +
+		"with the per-process breakdown that says which part of the tree is responsible. " +
+		"Works on a target whose processes have already exited — what it was doing before " +
+		"it died is usually the question.",
+	Args: cobra.ExactArgs(1),
+	RunE: runWatchShow,
+}
+
 var watchDaemonCmd = &cobra.Command{
 	Use:   "daemon",
 	Short: "Run the collector in the foreground",
@@ -79,8 +90,101 @@ func init() {
 		"how often to re-walk the process table for tree members (default: 30s)")
 	watchDaemonCmd.Flags().Bool("quiet", false, "do not report each tick")
 
-	watchCmd.AddCommand(watchAddCmd, watchLsCmd, watchRmCmd, watchDaemonCmd)
+	watchShowCmd.Flags().StringP("output", "o", "table", "output format: table | json")
+	watchShowCmd.Flags().Duration("window", time.Hour, "how far back to report")
+	watchShowCmd.Flags().Duration("bucket", 0,
+		"time resolution to aggregate at (default: 1/120th of the window)")
+
+	watchCmd.AddCommand(watchAddCmd, watchLsCmd, watchRmCmd, watchShowCmd, watchDaemonCmd)
 	rootCmd.AddCommand(watchCmd)
+}
+
+func runWatchShow(cmd *cobra.Command, args []string) error {
+	format, err := outputFormat(cmd)
+	if err != nil {
+		return err
+	}
+	pid, err := parsePID(args[0])
+	if err != nil {
+		return err
+	}
+	window, _ := cmd.Flags().GetDuration("window")
+	if window <= 0 {
+		return fmt.Errorf("--window must be positive")
+	}
+	bucket, _ := cmd.Flags().GetDuration("bucket")
+	if bucket <= 0 {
+		bucket = defaultBucket(window)
+	}
+
+	store, err := openStore(cmd)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	targets, err := store.Targets()
+	if err != nil {
+		return fmt.Errorf("reading targets: %w", err)
+	}
+	target, err := latestTargetFor(targets, pid)
+	if err != nil {
+		return err
+	}
+
+	procs, err := proc.Collect()
+	if err != nil {
+		return fmt.Errorf("collecting processes: %w", err)
+	}
+	status := watch.Status{Target: target, Running: target.Running(proc.NewIndex(procs))}
+
+	now := time.Now()
+	summary, err := store.Summary(target.ID, now.Add(-window), now, bucket)
+	if err != nil {
+		return fmt.Errorf("summarising: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	switch format {
+	case render.FormatJSON:
+		body, err := render.WatchSummaryJSON(status, summary, window)
+		if err != nil {
+			return fmt.Errorf("rendering json: %w", err)
+		}
+		fmt.Fprint(out, body)
+	case render.FormatTable:
+		home, _ := os.UserHomeDir()
+		fmt.Fprint(out, render.WatchSummaryText(status, summary, window, now, home, terminalWidth(out)))
+	default:
+		return fmt.Errorf("unhandled output format %v", format)
+	}
+	return nil
+}
+
+// defaultBucket picks a resolution from the window: enough points to show the
+// shape, few enough that each is backed by real samples.
+func defaultBucket(window time.Duration) time.Duration {
+	const points = 120
+	if b := window / points; b > time.Second {
+		return b
+	}
+	return time.Second
+}
+
+// latestTargetFor finds the target for a PID. A PID can name more than one
+// target once it has been recycled, so the most recently added wins — that is
+// the one the user just looked at in `watch ls`.
+func latestTargetFor(targets []watch.Target, pid int32) (watch.Target, error) {
+	var found watch.Target
+	for _, t := range targets {
+		if t.PID == pid && (found.ID == 0 || t.AddedAt.After(found.AddedAt)) {
+			found = t
+		}
+	}
+	if found.ID == 0 {
+		return watch.Target{}, fmt.Errorf("pcpm is not watching %d — add it with `pcpm watch add %d`", pid, pid)
+	}
+	return found, nil
 }
 
 func runWatchDaemon(cmd *cobra.Command, _ []string) error {

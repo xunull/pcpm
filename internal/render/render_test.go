@@ -313,3 +313,62 @@ func TestWatchTargetsJSON(t *testing.T) {
 		t.Error("created_at is missing; it is what distinguishes a reused PID")
 	}
 }
+
+// Piped output reports a width of 0, which by convention means "do not
+// truncate". Passing it straight to truncate blanks the value instead — which
+// is how the command line vanished from the summary's first line.
+func TestWatchSummaryTextKeepsTheCommandWhenNotATerminal(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	s := watch.Status{
+		Target:  watch.Target{PID: 100, Name: "bun", Cmdline: "bun run dev --port 3000", Cwd: "/proj", AddedAt: now.Add(-time.Hour)},
+		Running: true,
+	}
+	sum := watch.Summary{
+		Samples: 12, First: now.Add(-time.Minute), Last: now,
+		CurrentCPUPercent: 20, PeakCPUPercent: 80,
+		CurrentRSSBytes: 300 << 20, PeakRSSBytes: 400 << 20,
+		Processes: []watch.ProcessUsage{{PID: 100, Name: "bun", CPUPercent: 20, RSSBytes: 300 << 20}},
+	}
+
+	out := WatchSummaryText(s, sum, time.Hour, now, "", 0)
+	if !strings.Contains(out, "bun run dev --port 3000") {
+		t.Errorf("the command line is missing from the report:\n%s", out)
+	}
+	for _, want := range []string{"watching", "running", "peak", "PID", "NAME", "CPU", "RSS"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Asking about a target the collector never reached should say so, rather than
+// reporting a confident zero.
+func TestWatchSummaryTextSaysWhenThereAreNoSamples(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	s := watch.Status{Target: watch.Target{PID: 100, Cmdline: "bun run dev", AddedAt: now}, Running: true}
+
+	out := WatchSummaryText(s, watch.Summary{}, time.Hour, now, "", 0)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("want the report to say there is nothing to show:\n%s", out)
+	}
+	if !strings.Contains(out, "watch daemon") {
+		t.Errorf("want a pointer at the likely cause (the collector is not running):\n%s", out)
+	}
+}
+
+func TestBytes(t *testing.T) {
+	for _, tc := range []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1536, "1.5 KB"},
+		{300 << 20, "300 MB"},
+		{3 << 30, "3.0 GB"},
+	} {
+		if got := Bytes(tc.in); got != tc.want {
+			t.Errorf("Bytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
