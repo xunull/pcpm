@@ -62,9 +62,42 @@ func TestTreeMembersOfAnAbsentPID(t *testing.T) {
 	}
 }
 
+func TestAncestors(t *testing.T) {
+	ix := NewIndex(tree())
+
+	var got []int32
+	for _, a := range ix.Ancestors(103) {
+		got = append(got, a.PID)
+	}
+	// nearest first, and 103 itself is not its own ancestor
+	if want := []int32{101, 100, 1}; !slices.Equal(got, want) {
+		t.Errorf("Ancestors(103) = %v, want %v", got, want)
+	}
+
+	// pid 1's parent is 0, which is not in the snapshot: the chain just ends
+	if got := ix.Ancestors(1); len(got) != 0 {
+		t.Errorf("Ancestors(1) = %v, want none", got)
+	}
+}
+
 // Parent links come from the OS and are read one process at a time, so a
 // snapshot can be internally inconsistent and describe a cycle. Walking it must
 // terminate rather than hang the caller.
+func TestAncestorsTerminatesOnACycle(t *testing.T) {
+	ix := NewIndex([]Process{
+		{PID: 10, PPID: 11},
+		{PID: 11, PPID: 10},
+	})
+
+	var got []int32
+	for _, a := range ix.Ancestors(10) {
+		got = append(got, a.PID)
+	}
+	if want := []int32{11}; !slices.Equal(got, want) {
+		t.Errorf("Ancestors(10) = %v, want %v — each PID visited once", got, want)
+	}
+}
+
 func TestTreeMembersTerminatesOnACycle(t *testing.T) {
 	ix := NewIndex([]Process{
 		{PID: 10, PPID: 11},

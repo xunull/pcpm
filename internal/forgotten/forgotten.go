@@ -1,4 +1,4 @@
-// Package forgotten holds the domain logic for pcpm's primary lens: processes
+// Package forgotten holds the domain logic behind `pcpm forgotten`: processes
 // nothing is looking after any more — the surviving roots of jobs that were
 // never cleaned up. See CONTEXT.md ("Forgotten Process") and docs/adr/0005.
 package forgotten
@@ -59,18 +59,12 @@ func Detect(procs []proc.Process, portsByPID map[int32][]listen.Port) []Tree {
 // hasForgottenAncestor reports whether any ancestor of p is itself a forgotten
 // root, which makes p a member of that tree rather than a root in its own right.
 func hasForgottenAncestor(p proc.Process, ix proc.Index, roots map[int32]bool) bool {
-	seen := map[int32]bool{p.PID: true}
-	for current := p; ; {
-		parent, ok := ix.Lookup(current.PPID)
-		if !ok || seen[parent.PID] {
-			return false
-		}
-		if roots[parent.PID] {
+	for _, ancestor := range ix.Ancestors(p.PID) {
+		if roots[ancestor.PID] {
 			return true
 		}
-		seen[parent.PID] = true
-		current = parent
 	}
+	return false
 }
 
 // ApplyIgnore returns the trees whose root process name matches none of the

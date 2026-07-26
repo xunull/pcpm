@@ -6,8 +6,9 @@ package proc
 
 import "time"
 
-// Process is a single process observed on the host, reduced to the fields pcpm
-// needs.
+// Process is a single process observed on the host, reduced to the facts pcpm's
+// tools reason about: who launched it, what group it belongs to, where it was
+// started from, and how long it has been running.
 type Process struct {
 	PID     int32
 	PPID    int32
@@ -49,6 +50,29 @@ func NewIndex(procs []Process) Index {
 func (ix Index) Lookup(pid int32) (Process, bool) {
 	p, ok := ix.byPID[pid]
 	return p, ok
+}
+
+// Ancestors returns pid's ancestors, nearest first, stopping where the chain
+// leaves the snapshot. pid itself is not among them, and a pid the snapshot
+// never held has no known ancestors.
+//
+// Cycles terminate the walk for the same reason they do in TreeMembers.
+func (ix Index) Ancestors(pid int32) []Process {
+	current, ok := ix.byPID[pid]
+	if !ok {
+		return nil
+	}
+	var out []Process
+	seen := map[int32]bool{pid: true}
+	for {
+		parent, ok := ix.byPID[current.PPID]
+		if !ok || seen[parent.PID] {
+			return out
+		}
+		seen[parent.PID] = true
+		out = append(out, parent)
+		current = parent
+	}
 }
 
 // TreeMembers returns root together with every descendant of it, breadth-first.
