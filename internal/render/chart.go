@@ -23,12 +23,11 @@ type ChartOptions struct {
 	Label func(float64) string
 	// Max is the value at the top of the chart. Zero fits the data.
 	Max float64
-	// Flat draws without the severity gradient, for a quantity whose scale is
-	// fitted to its own data and so cannot say what "high" means.
-	Flat bool
-	// Ceiling rounds the fitted top up to a value that means something, so that
-	// a row's height on the chart still corresponds to a real quantity.
-	Ceiling func(float64) float64
+	// Severity maps a value onto the colour gradient, from 0 to 1. Nil draws
+	// in a single colour, for a quantity with no absolute meaning to convey.
+	Severity func(float64) float64
+	// Palette is how much colour the terminal can show.
+	Palette Palette
 }
 
 // Chart draws a target's history as a filled area with axes and a title.
@@ -51,11 +50,6 @@ func Chart(points []watch.Point, series SeriesAccessor, o ChartOptions) string {
 	top := observedTop(points, series)
 	if o.Max > 0 {
 		top = o.Max
-	} else if o.Ceiling != nil {
-		// Rounding up to a meaningful boundary is itself the headroom; adding
-		// more on top would push a 92% peak onto a two-core axis and waste half
-		// the chart.
-		top = o.Ceiling(top)
 	} else {
 		// Headroom above the observed peak. Scaling exactly to the maximum
 		// makes a steady value fill the chart, which reads as "at its limit"
@@ -82,7 +76,10 @@ func Chart(points []watch.Point, series SeriesAccessor, o ChartOptions) string {
 	}
 
 	body := strings.Split(strings.TrimSuffix(
-		Area(columns, AreaOptions{Width: plotWidth, Height: o.Height, Max: top, Flat: o.Flat}), "\n"), "\n")
+		Area(columns, AreaOptions{
+			Width: plotWidth, Height: o.Height, Max: top,
+			Palette: o.Palette, Severity: o.Severity,
+		}), "\n"), "\n")
 	for i, row := range body {
 		switch i {
 		case 0:
@@ -109,12 +106,22 @@ func RSSSeries(p watch.Point) (float64, float64) {
 	return float64(p.RSSBytes), float64(p.PeakRSSBytes)
 }
 
-// chartColumns lays points along the window, one slot per half-character, and
-// reports the largest value seen so the axis can be scaled to it.
+// chartColumns fits a series onto exactly as many slots as the terminal can
+// draw, which is the most it can ever show. The data is adapted to that
+// density in whichever direction it needs — there is no regime to pick between:
 //
-// Slots with no point stay absent rather than being filled by their neighbours:
-// nothing was collected then, and a chart that guessed would let a stopped
-// collector pass for a quiet process.
+//   - a slot holding samples averages them, and carries the highest peak among
+//     them, so the fill answers "how loaded" and the cap answers "did anything
+//     happen";
+//   - a slot holding none is interpolated between its neighbours, because two
+//     consecutive samples say what the value did between them;
+//   - unless those neighbours sit either side of a gap, where nothing was
+//     collected and any line drawn would be invented.
+//
+// Averaging rather than taking the maximum is what stops the chart changing its
+// story when the terminal is resized: both mean and max survive being combined
+// again, a maximum used as the fill does not — narrowing a terminal would make
+// an idle process look busy.
 func chartColumns(points []watch.Point, series SeriesAccessor, width int, from, to time.Time) []Column {
 	slots := max(width*2, 2)
 	span := to.Sub(from)
@@ -122,47 +129,97 @@ func chartColumns(points []watch.Point, series SeriesAccessor, width int, from, 
 		return nil
 	}
 
-	// A point stands for a slice of time, not an instant, so it covers every
-	// slot that slice reaches. Lighting one slot each leaves the rest blank —
-	// and blank means "nothing was collected", which would turn a five-minute
-	// window on a wide terminal into a sieve while every sample arrived on time.
-	slotSpan := span / time.Duration(slots)
-	cover := 1
-	if step := pointSpacing(points); step > slotSpan {
-		cover = int((step + slotSpan - 1) / slotSpan) // round up
+	type bucket struct {
+		sum   float64
+		n     int
+		peak  float64
+		known bool
 	}
-
-	columns := make([]Column, slots)
+	acc := make([]bucket, slots)
 	for _, p := range points {
 		offset := p.At.Sub(from)
 		if offset < 0 || offset >= span {
 			continue
 		}
-		start := min(int(float64(offset)/float64(span)*float64(slots)), slots-1)
+		i := min(int(float64(offset)/float64(span)*float64(slots)), slots-1)
 		value, peak := series(p)
-		for i := start; i < start+cover && i < slots; i++ {
-			// Several points can share a slot when the window is long. Keep the
-			// heavier: a slot that held a burst should look like it.
-			if !columns[i].Present || value > columns[i].Value {
-				columns[i].Value = value
-			}
-			columns[i].Peak = math.Max(columns[i].Peak, peak)
-			columns[i].Present = true
+		acc[i].sum += value
+		acc[i].n++
+		acc[i].peak = math.Max(acc[i].peak, peak)
+		acc[i].known = true
+	}
+
+	columns := make([]Column, slots)
+	for i := range columns {
+		if acc[i].n == 0 {
+			continue
+		}
+		columns[i] = Column{
+			Value:   acc[i].sum / float64(acc[i].n),
+			Peak:    acc[i].peak,
+			Present: true,
 		}
 	}
+	interpolate(columns, slotsPerGap(points, span, slots))
 	return columns
 }
 
-// observedTop is the largest value the window reached, so the axis can be
-// scaled before the columns are laid out — the layout needs the plot width,
-// which needs the label width, which needs this.
-func observedTop(points []watch.Point, series SeriesAccessor) float64 {
-	top := 0.0
-	for _, p := range points {
-		value, peak := series(p)
-		top = math.Max(top, math.Max(value, peak))
+// slotsPerGap is how many empty slots may be bridged before the emptiness means
+// the collector stopped rather than merely that it samples less often than the
+// terminal can draw. It comes from the data's own cadence, because the
+// collection interval is a configuration key and assuming the default would
+// misjudge every other setting.
+func slotsPerGap(points []watch.Point, span time.Duration, slots int) int {
+	cadence := pointSpacing(points)
+	if cadence <= 0 {
+		return 0
 	}
-	return top
+	slotSpan := span / time.Duration(slots)
+	if slotSpan <= 0 {
+		return 0
+	}
+	// Two cadences of slack, matching what the query layer treats as a gap.
+	return int(2 * cadence / slotSpan)
+}
+
+// interpolate fills runs of empty slots between two known ones, provided the
+// run is short enough to be the space between samples rather than a period
+// nothing was collected in.
+func interpolate(columns []Column, maxRun int) {
+	if maxRun < 1 {
+		return
+	}
+	for i := 0; i < len(columns); i++ {
+		if columns[i].Present {
+			continue
+		}
+		start := i
+		for i < len(columns) && !columns[i].Present {
+			i++
+		}
+		// A run touching either end has only one neighbour, so there is nothing
+		// to interpolate between.
+		if start == 0 || i >= len(columns) {
+			continue
+		}
+		run := i - start
+		if run > maxRun {
+			continue // the collector was not running; leave it blank
+		}
+		left, right := columns[start-1], columns[i]
+		for j := range run {
+			t := float64(j+1) / float64(run+1)
+			// The peak is interpolated too, not carried across as the higher
+			// of the two ends: an interpolated slot is a guess about the value,
+			// and claiming it also reached the neighbour's peak would invent a
+			// burst that nothing observed.
+			columns[start+j] = Column{
+				Value:   left.Value + (right.Value-left.Value)*t,
+				Peak:    left.Peak + (right.Peak-left.Peak)*t,
+				Present: true,
+			}
+		}
+	}
 }
 
 // pointSpacing is how far apart the points are, taken from the data rather than
@@ -201,14 +258,19 @@ func timeAxis(from, to time.Time, width int) string {
 	return left + strings.Repeat(" ", pad/2) + middle + strings.Repeat(" ", pad-pad/2) + right
 }
 
-// WholeCores rounds a CPU ceiling up to the next whole core, so that the top of
-// the chart is always 100%, 200%, and so on. Keeping the axis on a real
-// boundary is what lets the colour gradient mean anything: half way up is half
-// a core, not half of whatever this window happened to reach.
-func WholeCores(top float64) float64 {
-	cores := math.Ceil(top / 100)
-	if cores < 1 {
-		cores = 1
+// CPUSeverity places a CPU figure on the colour gradient: half a core is the
+// midpoint, a full core the top. Exported so a chart can say what its colours
+// mean without the renderer having to know it is looking at CPU.
+func CPUSeverity(cpuPercent float64) float64 { return severity(cpuPercent) }
+
+// observedTop is the largest value the window reached, so the axis can be
+// scaled before the columns are laid out — the layout needs the plot width,
+// which needs the label width, which needs this.
+func observedTop(points []watch.Point, series SeriesAccessor) float64 {
+	top := 0.0
+	for _, p := range points {
+		value, peak := series(p)
+		top = math.Max(top, math.Max(value, peak))
 	}
-	return cores * 100
+	return top
 }

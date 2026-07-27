@@ -1,9 +1,6 @@
 package render
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // Column is one slice of time in a chart: what the tree averaged over it, what
 // it peaked at, and whether anything was collected at all.
@@ -22,14 +19,13 @@ type AreaOptions struct {
 	Width  int     // character columns
 	Height int     // character rows
 	Max    float64 // the value at the top of the chart
-	// Flat draws in one colour instead of the vertical gradient.
-	//
-	// The gradient reads as severity, and it only tells the truth when the
-	// axis means something absolute — btop can colour by row because its scale
-	// is always 0–100% of a CPU. A chart fitted to whatever its own data
-	// happened to reach has no such meaning, and colouring the top red would
-	// call a process using 8% of a core "critical".
-	Flat bool
+	// Palette is how much colour the terminal can show.
+	Palette Palette
+	// Severity maps a value to its position on the gradient, from 0 to 1. It is
+	// given the value rather than the row because the axis is fitted to the
+	// data: height says where something sits on this chart, not what it means.
+	// A nil Severity draws in one colour, for a quantity with no such meaning.
+	Severity func(float64) float64
 }
 
 // brailleFill maps (left sub-column level, right sub-column level), each 0–4,
@@ -75,6 +71,9 @@ func Area(columns []Column, o AreaOptions) string {
 
 	levels := make([][2]int, o.Width*o.Height) // [row*width+col] = {left, right}
 	peaks := make([][2]int, o.Width*o.Height)
+	// The colour of a cell comes from the largest value drawn into it, so a
+	// character straddling calm and busy reads as busy.
+	worst := make([]float64, o.Width*o.Height)
 	for i, c := range columns {
 		if !c.Present {
 			continue
@@ -94,6 +93,7 @@ func Area(columns []Column, o AreaOptions) string {
 			if level := h%subRows + 1; level > levels[at][side] {
 				levels[at][side] = level
 			}
+			worst[at] = max(worst[at], c.Value)
 		}
 		// The cap sits at the peak's own height, one dot thick: a compressed
 		// bucket has to keep the evidence that something happened in it.
@@ -105,19 +105,14 @@ func Area(columns []Column, o AreaOptions) string {
 				if level := h%subRows + 1; level > peaks[at][side] {
 					peaks[at][side] = level
 				}
+				worst[at] = max(worst[at], c.Peak)
 			}
 		}
 	}
 
 	var b strings.Builder
+	reset := o.Palette.Reset()
 	for row := range o.Height {
-		// Colour comes from the row, not the value: a fixed vertical gradient
-		// means a busy period reads as a shape, without going to the axis to
-		// find out how high it got. btop does the same.
-		colour := green
-		if !o.Flat {
-			colour = rowColour(row, o.Height)
-		}
 		for col := range o.Width {
 			at := row*o.Width + col
 			cell := brailleFill[levels[at][0]][levels[at][1]]
@@ -128,7 +123,13 @@ func Area(columns []Column, o AreaOptions) string {
 				b.WriteByte(' ')
 				continue
 			}
-			fmt.Fprintf(&b, "\x1b[%dm%c\x1b[0m", colour, cell)
+			position := 0.0
+			if o.Severity != nil {
+				position = o.Severity(worst[at])
+			}
+			b.WriteString(o.Palette.Gradient(position))
+			b.WriteRune(cell)
+			b.WriteString(reset)
 		}
 		b.WriteByte('\n')
 	}
@@ -167,27 +168,4 @@ func capRune(left, right int) rune {
 		return ' '
 	}
 	return base + r
-}
-
-// rowColour is the vertical gradient: green low, yellow in the middle, red at
-// the top. Only the row matters, so the same height always reads the same way.
-const (
-	green  = 32
-	yellow = 33
-	red    = 31
-)
-
-func rowColour(row, height int) int {
-	if height < 2 {
-		return green
-	}
-	// fraction of the way up the chart, 0 at the bottom
-	up := float64(height-1-row) / float64(height-1)
-	switch {
-	case up > 0.75:
-		return red
-	case up > 0.45:
-		return yellow
-	}
-	return green
 }

@@ -63,9 +63,10 @@ type Source interface {
 
 // Model is the view's state.
 type Model struct {
-	source Source
-	home   string
-	now    func() time.Time
+	source  Source
+	home    string
+	palette render.Palette
+	now     func() time.Time
 	// refresh is how often the view re-queries, injectable so tests need not
 	// wait out a real timer.
 	refresh time.Duration
@@ -234,16 +235,17 @@ func (m Model) View() string {
 	}
 	b.WriteString(render.Chart(points, render.CPUSeries, render.ChartOptions{
 		Width: chartWidth, Height: chartHeight, From: from, To: to,
-		Title:   m.cpuTitle(),
-		Label:   render.Percent,
-		Ceiling: render.WholeCores,
+		Title:    m.cpuTitle(),
+		Label:    render.Percent,
+		Severity: render.CPUSeverity,
+		Palette:  m.palette,
 	}))
 	b.WriteString("\n")
 	b.WriteString(render.Chart(points, render.RSSSeries, render.ChartOptions{
 		Width: chartWidth, Height: chartHeight, From: from, To: to,
-		Title: fmt.Sprintf("MEMORY   now %s   peak %s", render.Bytes(m.summary.CurrentRSSBytes), render.Bytes(m.summary.PeakRSSBytes)),
-		Label: func(v float64) string { return render.Bytes(int64(v)) },
-		Flat:  true,
+		Title:   fmt.Sprintf("MEMORY   now %s   peak %s", render.Bytes(m.summary.CurrentRSSBytes), render.Bytes(m.summary.PeakRSSBytes)),
+		Label:   func(v float64) string { return render.Bytes(int64(v)) },
+		Palette: m.palette,
 	}))
 	b.WriteString("\n")
 	b.WriteString(m.processes())

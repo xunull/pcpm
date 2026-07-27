@@ -249,3 +249,27 @@ func TestTheStartOfTheWindowIsNotDroppedOffTheLeft(t *testing.T) {
 	}
 	t.Errorf("nothing is drawn at the start of the window; the oldest columns were dropped:\n%s", out)
 }
+
+// An interpolated slot is a guess about the value between two samples. Carrying
+// a neighbour's peak across it would invent a burst nothing observed — and a
+// cap is precisely the mark that says "something happened here".
+func TestInterpolatedSlotsDoNotInventPeaks(t *testing.T) {
+	from := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	to := from.Add(5 * time.Minute)
+
+	// sparse samples where peak equals value, as an uncompressed bucket gives
+	points := []watch.Point{
+		{At: from, CPUPercent: 10, PeakCPUPercent: 10},
+		{At: from.Add(2*time.Minute + 30*time.Second), CPUPercent: 90, PeakCPUPercent: 90},
+		{At: from.Add(5*time.Minute - time.Second), CPUPercent: 10, PeakCPUPercent: 10},
+	}
+
+	for _, c := range chartColumns(points, CPUSeries, 60, from, to) {
+		if !c.Present {
+			continue
+		}
+		if c.Peak > c.Value+0.001 {
+			t.Fatalf("an interpolated slot claims a peak of %.1f above its value of %.1f", c.Peak, c.Value)
+		}
+	}
+}

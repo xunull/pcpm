@@ -164,8 +164,9 @@ Piped or redirected output prints a text summary instead of control codes; `--pl
 
 - **The filled area is the average, and the dots above it are the peak.** A column in the 7-day view covers hours. Averaging alone would erase a three-second request inside an idle hour — and that request is the evidence that something still uses this process. The cap keeps it.
 - **A gap in the fill means nothing was collected** — the machine was asleep, or the collector was not running. An idle period is different: it still draws a baseline along the bottom. The two must not look the same, or a stopped collector passes for a quiet process.
-- **The CPU axis is in whole cores**, so height means something: half way up a `100%` chart is half a core, and a busy tree gets a `200%` axis rather than being clipped.
-- **Colour follows height, not time.** Red near the top of the CPU chart means near a full core. The memory chart is a single colour: its scale is fitted to its own data, so "high" there would not mean anything.
+- **The axis fits the window**, so an idle process is still readable. Most forgotten processes are idle; pinned to a full core, a server using 3% with occasional 12% bursts draws as a flat line and the bursts — the evidence something still calls it — disappear.
+- **Colour follows the value, not the height.** Half a core is the midpoint of the gradient and a full core the top, so red always means the same thing whatever the axis happens to be. Colour therefore tracks the curve rather than sitting in bands.
+- **Colour adapts to what the terminal can show, never to how it looks.** 24-bit where `COLORTERM` says so, the 256-colour cube otherwise, sixteen on a console, and none at all under `NO_COLOR` or `TERM=dumb`. The axis, labels and titles carry no colour at all and inherit the terminal's foreground — the background is never painted.
 - **`tab` walks the process list.** With a process selected the charts show that process alone, which is how you tell a busy wrapper from a busy worker. `tab` past the end returns to the whole tree.
 - **Time windows are fixed** — `5m`, `1h`, `24h`, `7d`. There is no zoom or pan.
 
