@@ -3,6 +3,9 @@ package render
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/xunull/pcpm/internal/watch"
 )
 
 // plain drops the colour escapes so a frame's shape can be asserted on.
@@ -147,4 +150,102 @@ func firstNonBlank(rows []string) int {
 		}
 	}
 	return len(rows)
+}
+
+// A chart slot stands for a slice of time, and a point covers however many
+// slots its bucket spans. Lighting only one slot per point leaves the rest
+// blank — and blank means "nothing was collected", so a five-minute window on a
+// wide terminal turns into a sieve even though every sample arrived on time.
+func TestPointsCoverTheSlotsTheirBucketSpans(t *testing.T) {
+	from := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	to := from.Add(5 * time.Minute)
+
+	// 5 seconds apart, exactly as a default collector produces
+	var points []watch.Point
+	for i := range 60 {
+		points = append(points, watch.Point{
+			At:         from.Add(time.Duration(i) * 5 * time.Second),
+			CPUPercent: 40,
+		})
+	}
+
+	columns := chartColumns(points, CPUSeries, 80, from, to)
+
+	absent := 0
+	for _, c := range columns {
+		if !c.Present {
+			absent++
+		}
+	}
+	// A steady collector leaves no holes; allow only the rounding at the edges.
+	if absent > len(columns)/10 {
+		t.Errorf("%d of %d slots are blank for an unbroken series — the chart claims data is missing",
+			absent, len(columns))
+	}
+}
+
+// A real gap must still read as one, or the fix above would paper over the very
+// thing the Present flag exists to show.
+func TestARealGapStaysBlank(t *testing.T) {
+	from := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	to := from.Add(5 * time.Minute)
+
+	var points []watch.Point
+	for i := range 60 {
+		at := from.Add(time.Duration(i) * 5 * time.Second)
+		if i >= 20 && i < 40 { // 100 seconds with nothing collected
+			continue
+		}
+		points = append(points, watch.Point{At: at, CPUPercent: 40})
+	}
+
+	columns := chartColumns(points, CPUSeries, 80, from, to)
+
+	absent := 0
+	for _, c := range columns {
+		if !c.Present {
+			absent++
+		}
+	}
+	// 100s of a 300s window is a third of it
+	if absent < len(columns)/5 {
+		t.Errorf("only %d of %d slots are blank; a 100-second gap was filled in", absent, len(columns))
+	}
+}
+
+// The plot is narrower than the chart by the width of the axis labels. Laying
+// the columns out for the chart instead silently drops the oldest of them off
+// the left edge while the time axis goes on claiming to start where they were —
+// the chart would be missing data and saying otherwise.
+func TestTheStartOfTheWindowIsNotDroppedOffTheLeft(t *testing.T) {
+	from := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+
+	// A marker at the very start of the window, nothing else until much later.
+	points := []watch.Point{
+		{At: from, CPUPercent: 90},
+		{At: from.Add(50 * time.Minute), CPUPercent: 10},
+	}
+
+	out := plain(Chart(points, CPUSeries, ChartOptions{
+		Width: 80, Height: 5, From: from, To: to, Label: Percent,
+	}))
+
+	rows := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	// find the plot rows: those beginning with the axis gutter
+	var plotted []string
+	for _, r := range rows {
+		if i := strings.Index(r, "│"); i >= 0 {
+			plotted = append(plotted, r[i+len("│"):])
+		}
+	}
+	if len(plotted) == 0 {
+		t.Fatalf("no plot rows found:\n%s", out)
+	}
+	for _, r := range plotted {
+		if strings.TrimSpace(r) != "" && strings.TrimLeft(r, " ") == r {
+			return // something is drawn in the very first column: the start survived
+		}
+	}
+	t.Errorf("nothing is drawn at the start of the window; the oldest columns were dropped:\n%s", out)
 }

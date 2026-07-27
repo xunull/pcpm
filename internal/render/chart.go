@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,7 +44,11 @@ func Chart(points []watch.Point, series SeriesAccessor, o ChartOptions) string {
 		o.Height = 3
 	}
 
-	columns, top := chartColumns(points, series, o)
+	// The plot is narrower than the chart by the width of the axis labels, and
+	// the columns have to be laid out for the plot: sized to the chart, the
+	// oldest of them fall off the left while the time axis still claims to
+	// start where they were.
+	top := observedTop(points, series)
 	if o.Max > 0 {
 		top = o.Max
 	} else if o.Ceiling != nil {
@@ -69,6 +74,7 @@ func Chart(points []watch.Point, series SeriesAccessor, o ChartOptions) string {
 	// 0 as "0.0%" and 70 as "70%", so sizing to the top overflows the row.
 	gutter := max(len([]rune(label(top))), len([]rune(label(0)))) + 1
 	plotWidth := max(o.Width-gutter-1, 8)
+	columns := chartColumns(points, series, plotWidth, o.From, o.To)
 
 	var b strings.Builder
 	if o.Title != "" {
@@ -109,32 +115,75 @@ func RSSSeries(p watch.Point) (float64, float64) {
 // Slots with no point stay absent rather than being filled by their neighbours:
 // nothing was collected then, and a chart that guessed would let a stopped
 // collector pass for a quiet process.
-func chartColumns(points []watch.Point, series SeriesAccessor, o ChartOptions) ([]Column, float64) {
-	slots := max(o.Width*2, 2)
-	span := o.To.Sub(o.From)
+func chartColumns(points []watch.Point, series SeriesAccessor, width int, from, to time.Time) []Column {
+	slots := max(width*2, 2)
+	span := to.Sub(from)
 	if span <= 0 || len(points) == 0 {
-		return nil, 0
+		return nil
+	}
+
+	// A point stands for a slice of time, not an instant, so it covers every
+	// slot that slice reaches. Lighting one slot each leaves the rest blank —
+	// and blank means "nothing was collected", which would turn a five-minute
+	// window on a wide terminal into a sieve while every sample arrived on time.
+	slotSpan := span / time.Duration(slots)
+	cover := 1
+	if step := pointSpacing(points); step > slotSpan {
+		cover = int((step + slotSpan - 1) / slotSpan) // round up
 	}
 
 	columns := make([]Column, slots)
-	top := 0.0
 	for _, p := range points {
-		offset := p.At.Sub(o.From)
+		offset := p.At.Sub(from)
 		if offset < 0 || offset >= span {
 			continue
 		}
-		i := min(int(float64(offset)/float64(span)*float64(slots)), slots-1)
+		start := min(int(float64(offset)/float64(span)*float64(slots)), slots-1)
 		value, peak := series(p)
-		// Several points can share a slot when the window is long. Keep the
-		// heavier: a slot that held a burst should look like it.
-		if !columns[i].Present || value > columns[i].Value {
-			columns[i].Value = value
+		for i := start; i < start+cover && i < slots; i++ {
+			// Several points can share a slot when the window is long. Keep the
+			// heavier: a slot that held a burst should look like it.
+			if !columns[i].Present || value > columns[i].Value {
+				columns[i].Value = value
+			}
+			columns[i].Peak = math.Max(columns[i].Peak, peak)
+			columns[i].Present = true
 		}
-		columns[i].Peak = math.Max(columns[i].Peak, peak)
-		columns[i].Present = true
+	}
+	return columns
+}
+
+// observedTop is the largest value the window reached, so the axis can be
+// scaled before the columns are laid out — the layout needs the plot width,
+// which needs the label width, which needs this.
+func observedTop(points []watch.Point, series SeriesAccessor) float64 {
+	top := 0.0
+	for _, p := range points {
+		value, peak := series(p)
 		top = math.Max(top, math.Max(value, peak))
 	}
-	return columns, top
+	return top
+}
+
+// pointSpacing is how far apart the points are, taken from the data rather than
+// from configuration: the collector's interval is a setting, and a chart that
+// assumed the default would misjudge every other one. The median ignores the
+// gaps, which are exactly the intervals that should stay uncovered.
+func pointSpacing(points []watch.Point) time.Duration {
+	if len(points) < 2 {
+		return 0
+	}
+	steps := make([]time.Duration, 0, len(points)-1)
+	for i := 1; i < len(points); i++ {
+		if d := points[i].At.Sub(points[i-1].At); d > 0 {
+			steps = append(steps, d)
+		}
+	}
+	if len(steps) == 0 {
+		return 0
+	}
+	slices.Sort(steps)
+	return steps[len(steps)/2]
 }
 
 // timeAxis labels the window's span beneath the plot.
