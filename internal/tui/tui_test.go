@@ -312,3 +312,46 @@ func TestSelectionFollowsThePIDNotTheRow(t *testing.T) {
 		t.Errorf("selection index = %d, want 1 (where pid 101 now is)", m.selected)
 	}
 }
+
+// The palette was declared on the model and passed to the charts, but never
+// assigned in the constructor — so every frame rendered with the zero value,
+// which means no colour at all. Nothing failed; the charts were simply grey.
+func TestFramesAreColouredOnACapableTerminal(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("COLORTERM", "truecolor")
+
+	m := loaded(t, source())
+	frame := m.View()
+
+	if !strings.Contains(frame, "\x1b[38;2;") {
+		t.Errorf("no 24-bit colour in the frame on a truecolor terminal:\n%s", frame)
+	}
+}
+
+// And none at all where the terminal says it cannot.
+func TestFramesAreUncolouredWhereColourIsRefused(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	m := loaded(t, source())
+
+	if strings.Contains(m.View(), "\x1b[") {
+		t.Error("NO_COLOR was set but the frame still carries escapes")
+	}
+}
+
+// Structural elements inherit the terminal's foreground; giving them a colour
+// is what made the first version's axis vanish into a dark background.
+func TestTitlesAndAxesCarryNoColour(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+
+	m := loaded(t, source())
+
+	for _, line := range strings.Split(m.View(), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "CPU ") || strings.HasPrefix(trimmed, "MEMORY ") {
+			if strings.Contains(line, "\x1b[") {
+				t.Errorf("a chart title carries a colour escape: %q", line)
+			}
+		}
+	}
+}

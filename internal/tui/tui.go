@@ -97,6 +97,7 @@ func New(source Source, home string, window int) Model {
 	return Model{
 		source:   source,
 		home:     home,
+		palette:  render.DetectPalette(),
 		now:      time.Now,
 		refresh:  refreshInterval,
 		window:   window,
