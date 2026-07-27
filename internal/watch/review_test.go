@@ -162,3 +162,50 @@ func TestTargetSurvivesItsRootWhenChildrenLiveOn(t *testing.T) {
 		t.Errorf("the surviving child should still be sampled, got %+v", got)
 	}
 }
+
+// A chart sized to a wide terminal asks for buckets finer than the collector's
+// interval. Honouring that literally scatters the samples into every other
+// bucket and leaves the rest empty — and empty means "nothing was collected".
+func TestSeriesWillNotProduceBucketsFinerThanTheData(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// a 30-second collector, which is a supported configuration
+	for i := range 120 {
+		seed(t, s, id, base, 100, [][2]float64{{float64(i * 30), float64(i) * 9}})
+	}
+
+	// ask for 22.5-second buckets, as an 80-column chart of an hour would
+	got, err := s.Series(id, base, base.Add(time.Hour), 22500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+
+	// Consecutive points must be one cadence apart, not scattered.
+	for i := 1; i < len(got); i++ {
+		if step := got[i].At.Sub(got[i-1].At); step < 30*time.Second {
+			t.Fatalf("points are %s apart for a 30s collector: the bucket was finer than the data", step)
+		}
+	}
+	if len(got) < 100 {
+		t.Errorf("want roughly one point per sample, got %d from 120 samples", len(got))
+	}
+}
+
+// Rollups are written on a slow timer while raw Samples are kept for two days,
+// so a long window is answerable from raw data long before it is summarised.
+// Returning nothing would show an empty chart for a target added minutes ago.
+func TestLongWindowFallsBackToRawSamplesBeforeAnythingIsRolledUp(t *testing.T) {
+	s, id, base := seededTarget(t)
+	start := base.Add(-24 * time.Hour)
+	for i := range 200 {
+		seed(t, s, id, start, 100, [][2]float64{{float64(i * 300), float64(i)}})
+	}
+	// deliberately no Rollup call
+
+	got, err := s.SeriesFor(id, start, base, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("SeriesFor: %v", err)
+	}
+	if len(got) == 0 {
+		t.Error("a 24-hour window returned nothing while raw samples covering it are still stored")
+	}
+}

@@ -86,6 +86,14 @@ func (s *Store) series(targetID int64, only int32, from, to time.Time, bucket ti
 	if len(deltas) == 0 {
 		return nil, nil
 	}
+	// A bucket finer than the collector's own cadence cannot be filled. Asking
+	// for one leaves holes between the samples, and a hole means "nothing was
+	// collected" — so a chart sized to a wide terminal would report a healthy
+	// 30-second collector as mostly missing. The cadence comes from the data
+	// because the interval is a configuration key.
+	if cadence := medianSpan(deltas); cadence > bucket {
+		bucket = cadence
+	}
 
 	acc := map[bucketKey]*share{}
 	gaps := map[int64]bool{}
@@ -244,6 +252,19 @@ func cpuDeltas(samples []Sample) []delta {
 	return out
 }
 
+// medianSpan is the typical interval between consecutive samples.
+func medianSpan(deltas []delta) time.Duration {
+	if len(deltas) == 0 {
+		return 0
+	}
+	spans := make([]time.Duration, len(deltas))
+	for i, d := range deltas {
+		spans[i] = d.span
+	}
+	slices.Sort(spans)
+	return spans[len(spans)/2]
+}
+
 // markGaps flags the intervals that are far longer than this data's own
 // cadence.
 //
@@ -254,14 +275,9 @@ func cpuDeltas(samples []Sample) []delta {
 func markGaps(deltas []delta) {
 	cadence := DefaultSampleInterval
 	if len(deltas) >= 2 {
-		spans := make([]time.Duration, len(deltas))
-		for i, d := range deltas {
-			spans[i] = d.span
-		}
-		slices.Sort(spans)
-		// The median, not the mean: a handful of real gaps must not drag the
-		// baseline up to where they stop looking like gaps.
-		if median := spans[len(spans)/2]; median > 0 {
+		if median := medianSpan(deltas); median > 0 {
+			// The median, not the mean: a handful of real gaps must not drag
+			// the baseline up to where they stop looking like gaps.
 			cadence = median
 		}
 	}

@@ -287,9 +287,20 @@ func (s *Store) rolledBreakdown(targetID int64, from, to time.Time, bucket time.
 // SeriesFor answers a window from whichever resolution suits it. Callers ask
 // for a window and a bucket; which table provides it is not their problem.
 func (s *Store) SeriesFor(targetID int64, from, to time.Time, bucket time.Duration) ([]Point, error) {
-	if to.Sub(from) > rawWindowLimit {
-		return s.RolledSeries(targetID, from, to, bucket)
+	if to.Sub(from) <= rawWindowLimit {
+		return s.Series(targetID, from, to, bucket)
 	}
+	rolled, err := s.RolledSeries(targetID, from, to, bucket)
+	if err != nil {
+		return nil, err
+	}
+	if len(rolled) > 0 {
+		return rolled, nil
+	}
+	// Nothing has been summarised for this window yet — the collector rolls up
+	// on a slow timer, and raw Samples are kept for longer than a day. Falling
+	// back to them is what stops a target added ten minutes ago from showing an
+	// empty chart on every window but the shortest.
 	return s.Series(targetID, from, to, bucket)
 }
 
