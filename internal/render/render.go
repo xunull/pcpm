@@ -210,22 +210,32 @@ func Grid(header []string, rows [][]string, width int) string {
 	}
 
 	var b strings.Builder
-	writeRow := func(r []string) {
+	writeRow := func(r []string, isHeader bool) {
 		var prefix strings.Builder
 		for i := 0; i < cols-1; i++ {
 			fmt.Fprintf(&prefix, "%-*s  ", w[i], at(r, i))
 		}
 		last := at(r, cols-1)
 		if width > 0 {
-			last = truncate(last, max(0, width-prefix.Len()))
+			room := max(0, width-prefix.Len())
+			if isHeader {
+				// A header is a fixed label, not free-form text: eliding its
+				// middle turns COMMAND into "C…AND", which reads as neither.
+				last = truncate(last, room)
+			} else {
+				// Every table puts its free-form value last, and in each of
+				// them that value is a command line. Anything short enough to
+				// fit — an RSS figure, a percentage — passes through untouched.
+				last = fitCommand(last, room)
+			}
 		}
 		b.WriteString(strings.TrimRight(prefix.String()+last, " "))
 		b.WriteByte('\n')
 	}
 
-	writeRow(header)
+	writeRow(header, true)
 	for _, r := range rows {
-		writeRow(r)
+		writeRow(r, false)
 	}
 	return b.String()
 }
@@ -541,6 +551,64 @@ func fit(s string, width int) string {
 		return s
 	}
 	return truncate(s, width)
+}
+
+// fitCommand shortens a command line to width, keeping what identifies it.
+//
+// A command line carries its meaning at the two ends — the program at the
+// front, what it was told to do at the back — with a long path in between.
+// Cutting the tail throws the identifying half away: three targets running
+// `bun /Users/…/gbrain serve` all shorten to the same prefix and stop being
+// distinguishable at exactly the moment you are trying to tell them apart.
+//
+// So paths go first, collapsed to their last segment, which is where a path's
+// own information is. That alone usually brings the line inside the width; when
+// it does not, the middle is elided rather than the end.
+func fitCommand(s string, width int) string {
+	if width <= 0 || len([]rune(s)) <= width {
+		return s
+	}
+	collapsed := collapsePaths(s)
+	if len([]rune(collapsed)) <= width {
+		return collapsed
+	}
+	// Below this there is not enough room for two meaningful ends, and an
+	// elided middle degenerates into fragments like "……kdb". A prefix at least
+	// names the program.
+	const readableEnds = 16
+	if width < readableEnds {
+		return truncate(collapsed, width)
+	}
+	return elideMiddle(collapsed, width)
+}
+
+// collapsePaths replaces arguments that look like filesystem paths with their
+// last segment. Two separators is the threshold: it catches `/usr/local/bin/x`
+// and `~/a/b` while leaving `app.main:app` and `127.0.0.1:8570` alone.
+func collapsePaths(s string) string {
+	fields := strings.Fields(s)
+	for i, f := range fields {
+		if strings.Count(f, "/") < 2 {
+			continue
+		}
+		segments := strings.Split(strings.Trim(f, "/"), "/")
+		fields[i] = ellipsis + "/" + segments[len(segments)-1]
+	}
+	return strings.Join(fields, " ")
+}
+
+// elideMiddle keeps both ends of s, dropping from the middle. The tail gets
+// twice the room of the head: arguments say more about what a process is doing
+// than the interpreter that launched it does.
+func elideMiddle(s string, width int) string {
+	runes := []rune(s)
+	if width <= 1 {
+		return ellipsis
+	}
+	keep := width - 1 // room for the ellipsis
+	head := keep / 3
+	tail := keep - head
+	return string(runes[:head]) + ellipsis + string(runes[len(runes)-tail:])
 }
 
 // truncate shortens s to at most n bytes, marking any cut with a trailing

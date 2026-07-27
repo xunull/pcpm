@@ -79,11 +79,14 @@ func TestGrid(t *testing.T) {
 		t.Errorf("second column not aligned at offset %d:\n%s", col2, full)
 	}
 
-	// narrow width => last column truncated with an ellipsis, no line exceeds width
+	// narrow width => last column shortened, no line exceeds the width
+	//
+	// Measured in runes, not bytes: a terminal column holds a character, so a
+	// byte limit cuts a line carrying any non-ASCII short of the space it has.
 	narrow := Grid(header, rows, 30)
 	for _, ln := range strings.Split(strings.TrimSuffix(narrow, "\n"), "\n") {
-		if len(ln) > 30 {
-			t.Errorf("line exceeds width 30 (%d bytes): %q", len(ln), ln)
+		if width := len([]rune(ln)); width > 30 {
+			t.Errorf("line exceeds width 30 (%d runes): %q", width, ln)
 		}
 	}
 	if !strings.Contains(narrow, "…") {
@@ -370,5 +373,114 @@ func TestBytes(t *testing.T) {
 		if got := Bytes(tc.in); got != tc.want {
 			t.Errorf("Bytes(%d) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A command line's information sits at its two ends — the program at the front,
+// what it is doing at the back — with a long path in between. Cutting the tail
+// throws away the identifying half: three `bun /Users/…/gbrain serve` targets
+// all truncate to the same prefix and become indistinguishable.
+func TestFitCommandKeepsWhatIdentifiesACommand(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    string
+		width int
+		want  []string // fragments that must survive
+	}{
+		{
+			"a path swallows the line",
+			"bun /Users/quincy/.bun/bin/gbrain serve", 30,
+			[]string{"bun", "gbrain", "serve"},
+		},
+		{
+			"the program name is behind a long path",
+			"/private/tmp/claude-501/-Users-quincy/scratchpad/inhomo-dr serve --addr 127.0.0.1:8570", 40,
+			[]string{"inhomo-dr", "serve"},
+		},
+		{
+			"no paths, so both ends are kept",
+			"rtk proxy uv run uvicorn app.main:app --port 8766", 30,
+			[]string{"rtk", "8766"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fitCommand(tc.in, tc.width)
+			if len([]rune(got)) > tc.width {
+				t.Errorf("result is %d runes wide, want at most %d: %q", len([]rune(got)), tc.width, got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q is missing %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFitCommandLeavesShortValuesAlone(t *testing.T) {
+	for _, s := range []string{"sleep 300", "280 MB", "", "70%"} {
+		if got := fitCommand(s, 30); got != s {
+			t.Errorf("fitCommand(%q) = %q, want it untouched", s, got)
+		}
+	}
+}
+
+// Collapsing paths is a display convenience. The machine-readable output must
+// still carry what was actually running.
+func TestJSONKeepsTheWholeCommandLine(t *testing.T) {
+	long := "bun /Users/quincy/.bun/bin/gbrain serve --flag /a/very/long/path/here"
+	out, err := WatchTargetsJSON([]watch.Status{
+		{Target: watch.Target{PID: 1, Cmdline: long, AddedAt: time.Now()}},
+	})
+	if err != nil {
+		t.Fatalf("WatchTargetsJSON: %v", err)
+	}
+	if !strings.Contains(out, long) {
+		t.Errorf("the JSON output altered the command line:\n%s", out)
+	}
+}
+
+// Terminal columns hold characters, not bytes. Limiting by bytes cuts a line
+// carrying non-ASCII well short of the room it actually has.
+func TestGridMeasuresTheLastColumnInRunes(t *testing.T) {
+	rows := [][]string{{"1", strings.Repeat("目录", 40)}}
+
+	out := Grid([]string{"PID", "COMMAND"}, rows, 40)
+
+	for _, ln := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if width := len([]rune(ln)); width > 40 {
+			t.Errorf("line is %d runes wide, want at most 40: %q", width, ln)
+		}
+	}
+	// and it should use most of the space rather than stopping a third of the way
+	body := strings.Split(strings.TrimSuffix(out, "\n"), "\n")[1]
+	if width := len([]rune(body)); width < 30 {
+		t.Errorf("only %d of 40 columns used; a byte limit would do this", width)
+	}
+}
+
+// A header is a fixed label. Eliding its middle turns COMMAND into "C…AND",
+// which reads as neither the word nor an abbreviation of it.
+func TestGridDoesNotElideTheMiddleOfAHeader(t *testing.T) {
+	rows := [][]string{{"1", strings.Repeat("x", 200)}}
+
+	out := Grid([]string{"PID", "COMMAND"}, rows, 12)
+	header := strings.Split(out, "\n")[0]
+
+	if strings.Contains(header, "C…AND") || strings.Contains(header, "…AND") {
+		t.Errorf("the header was elided in the middle: %q", header)
+	}
+}
+
+// Two ends need room to be ends. Below that, a prefix says more than a pair of
+// three-character fragments.
+func TestFitCommandFallsBackToAPrefixWhenVeryNarrow(t *testing.T) {
+	got := fitCommand("bun /Users/quincy/.bun/bin/gbrain serve", 8)
+
+	if !strings.HasPrefix(got, "bun") {
+		t.Errorf("fitCommand at width 8 = %q, want it to start with the program name", got)
+	}
+	if len([]rune(got)) > 8 {
+		t.Errorf("result is %d runes wide, want at most 8: %q", len([]rune(got)), got)
 	}
 }
