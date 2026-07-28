@@ -271,7 +271,9 @@ func runWatchDaemon(cmd *cobra.Command, _ []string) error {
 	// life, because a freshly started one cannot see connections that already
 	// existed — which for a watched server is all of them (ADR-0012). Failing
 	// to start it costs the traffic column and nothing else.
-	if source, err := watch.StartTrafficSource(); err != nil {
+	if !cfg.Watch.Network {
+		fmt.Fprintln(out, "traffic not being measured: turned off in configuration")
+	} else if source, err := watch.StartTrafficSource(); err != nil {
 		fmt.Fprintf(out, "traffic not being measured: %v\n", err)
 	} else {
 		collector.Traffic = source

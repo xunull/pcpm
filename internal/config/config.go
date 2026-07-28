@@ -53,6 +53,13 @@ type WatchConfig struct {
 	SampleInterval   time.Duration
 	DiscoverInterval time.Duration
 
+	// Network turns traffic collection on or off. It is on by default: a
+	// measurement that must be discovered in a config file before it does
+	// anything is a measurement nobody has, and the program it depends on
+	// ships with macOS. The switch exists for the one real objection — that
+	// the collector holds a persistent child process (ADR-0012).
+	Network bool
+
 	// MaintenanceInterval is how often to roll up settled Samples and drop what
 	// has aged out. RawRetention and RollupRetention are how long each
 	// resolution is kept: raw Samples answer "what exactly happened yesterday
@@ -81,6 +88,7 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v.SetDefault("watch.rollup_interval", watch.DefaultRollupInterval)
 	v.SetDefault("watch.raw_retention", watch.DefaultRawRetention)
 	v.SetDefault("watch.rollup_retention", watch.DefaultRollupRetention)
+	v.SetDefault("watch.network", true)
 	v.SetDefault("top.interval", top.DefaultInterval)
 	v.SetDefault("top.number", top.FitWindow)
 	v.SetDefault("top.sort", "cpu")
@@ -150,6 +158,7 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 			RollupInterval:      v.GetDuration("watch.rollup_interval"),
 			RawRetention:        v.GetDuration("watch.raw_retention"),
 			RollupRetention:     v.GetDuration("watch.rollup_retention"),
+			Network:             v.GetBool("watch.network"),
 		},
 	}, nil
 }
