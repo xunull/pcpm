@@ -530,3 +530,37 @@ func TestGridFitsTheLastColumnToDisplayColumns(t *testing.T) {
 		}
 	}
 }
+
+// A total shown without saying how much of its window it covers reads as
+// complete. The counter behind traffic restarts with the collector, so a short
+// window is ordinary rather than exceptional.
+func TestTrafficLineDisclosesPartialCoverage(t *testing.T) {
+	partial := TrafficLine(watch.Summary{
+		Traffic: watch.Traffic{InBytes: 4 << 30, OutBytes: 380 << 20},
+		Covered: 22 * time.Hour, Window: 24 * time.Hour,
+	})
+	if !strings.Contains(partial, "covering") || !strings.Contains(partial, "22h") {
+		t.Errorf("a short window did not say so: %q", partial)
+	}
+
+	full := TrafficLine(watch.Summary{
+		Traffic: watch.Traffic{InBytes: 4 << 30},
+		Covered: 24 * time.Hour, Window: 24 * time.Hour,
+	})
+	if strings.Contains(full, "covering") {
+		t.Errorf("a fully covered window should not caveat itself: %q", full)
+	}
+}
+
+func TestTrafficSeriesTurnsBucketBytesIntoARate(t *testing.T) {
+	at := TrafficSeries(10 * time.Second)
+	value, _ := at(watch.Point{Traffic: watch.Traffic{InBytes: 600, OutBytes: 400}})
+
+	if value != 100 {
+		t.Errorf("1000 bytes over 10s = %v/s, want 100", value)
+	}
+	// A zero-width bucket must not divide by zero.
+	if v, _ := TrafficSeries(0)(watch.Point{Traffic: watch.Traffic{InBytes: 5}}); v != 0 {
+		t.Errorf("a zero bucket gave %v", v)
+	}
+}

@@ -49,7 +49,26 @@ type Summary struct {
 	Samples           int
 	First             time.Time
 	Last              time.Time
-	Processes         []ProcessUsage // busiest first
+	// Traffic is what moved over the whole window: a sum of the buckets, not a
+	// difference between endpoints, so a counter that restarted mid-window does
+	// not distort it (ADR-0012).
+	Traffic Traffic
+	// Covered is how much of the window the points actually account for. A
+	// total needs it to mean anything — a figure covering twenty-two of
+	// twenty-four hours and one covering all of them look identical, and a
+	// reader shown only the number will treat it as complete.
+	Covered   time.Duration
+	Window    time.Duration
+	Processes []ProcessUsage // busiest first
+}
+
+// FullyCovered reports whether the window has no material gap in it. A little
+// slack absorbs a tick that merely ran late, which is not the reader's problem.
+func (s Summary) FullyCovered() bool {
+	if s.Window <= 0 {
+		return true
+	}
+	return s.Covered >= s.Window-s.Window/20
 }
 
 // gapFactor is how many sampling intervals may pass between two samples before
@@ -324,7 +343,7 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 		return Summary{}, err
 	}
 
-	sum := Summary{Samples: len(samples)}
+	sum := Summary{Samples: len(samples), Window: to.Sub(from)}
 	if len(samples) > 0 {
 		sum.First, sum.Last = samples[0].At, samples[len(samples)-1].At
 	} else if len(points) > 0 {
@@ -337,7 +356,12 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 	for _, p := range points {
 		sum.PeakCPUPercent = max(sum.PeakCPUPercent, p.PeakCPUPercent)
 		sum.PeakRSSBytes = max(sum.PeakRSSBytes, p.PeakRSSBytes)
+		sum.Traffic.InBytes += p.Traffic.InBytes
+		sum.Traffic.OutBytes += p.Traffic.OutBytes
 	}
+	// Every bucket that produced a point is a bucket the window was measured
+	// through; the rest of the window is what nobody was watching.
+	sum.Covered = min(time.Duration(len(points))*bucket, sum.Window)
 	if len(points) > 0 {
 		last := points[len(points)-1]
 		sum.CurrentCPUPercent = last.CPUPercent

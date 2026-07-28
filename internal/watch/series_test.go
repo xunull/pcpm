@@ -265,3 +265,49 @@ func TestSeriesAddsEachProcessOwnRate(t *testing.T) {
 		t.Errorf("CPU = %.2f%%, want 200%% (two processes at 100%% each)", got[0].CPUPercent)
 	}
 }
+
+// A total is meaningless without saying how much of its window it covers, and
+// the counter behind traffic is not durable: a window spanning a period when
+// nothing was collecting is short, not quiet.
+func TestSummaryReportsHowMuchOfTheWindowItCovers(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// five minutes of samples inside a ten-minute window
+	var points [][2]float64
+	for i := range 61 {
+		points = append(points, [2]float64{float64(i * 5), float64(i)})
+	}
+	seed(t, s, id, base, 100, points)
+
+	sum, err := s.Summary(id, base, at(base, 600), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sum.Window != 10*time.Minute {
+		t.Errorf("Window = %s, want 10m", sum.Window)
+	}
+	if sum.Covered < 4*time.Minute || sum.Covered > 6*time.Minute {
+		t.Errorf("Covered = %s, want about 5m of the 10m window", sum.Covered)
+	}
+	if sum.FullyCovered() {
+		t.Error("half a window should not report as fully covered")
+	}
+}
+
+func TestAWindowWithNoGapsReportsItselfCovered(t *testing.T) {
+	s, id, base := seededTarget(t)
+	var points [][2]float64
+	for i := range 61 {
+		points = append(points, [2]float64{float64(i * 5), float64(i)})
+	}
+	seed(t, s, id, base, 100, points)
+
+	sum, err := s.Summary(id, base, at(base, 300), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !sum.FullyCovered() {
+		t.Errorf("a fully sampled window reports %s of %s", sum.Covered, sum.Window)
+	}
+}

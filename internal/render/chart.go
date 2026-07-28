@@ -101,6 +101,23 @@ type SeriesAccessor func(watch.Point) (value, peak float64)
 // CPUSeries draws CPU: the bucket's rate, capped at its peak.
 func CPUSeries(p watch.Point) (float64, float64) { return p.CPUPercent, p.PeakCPUPercent }
 
+// TrafficSeries draws throughput.
+//
+// A Point carries bytes *moved during its bucket*, so turning that into a rate
+// needs the bucket's width — which is why this is built per query rather than
+// being a plain accessor like the others. Sent and received are added: the
+// question a chart answers is whether the line is busy, and splitting it into
+// two areas stacked on one another answers it worse.
+func TrafficSeries(bucket time.Duration) SeriesAccessor {
+	return func(p watch.Point) (float64, float64) {
+		if bucket <= 0 {
+			return 0, 0
+		}
+		perSecond := float64(p.Traffic.InBytes+p.Traffic.OutBytes) / bucket.Seconds()
+		return perSecond, perSecond
+	}
+}
+
 // RSSSeries draws resident memory.
 func RSSSeries(p watch.Point) (float64, float64) {
 	return float64(p.RSSBytes), float64(p.PeakRSSBytes)
