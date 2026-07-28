@@ -17,12 +17,15 @@ import (
 // a reader who sees it grow knows what to do about it (ADR-0011).
 func TopHeader(t top.Totals) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CPU  %s%% of %s%% (%d cores)  ·  attributed %s%%",
-		formatPercent(t.BusyPercent), formatPercent(t.Capacity()), t.Cores,
-		formatPercent(t.AttributedPercent))
+	fmt.Fprintf(&b, "CPU  %s%% of %s%% (%d cores)  ·  attributed %s%%  ·  unattributed %s%%",
+		rankedPercent(t.BusyPercent), rankedPercent(t.Capacity()), t.Cores,
+		rankedPercent(t.AttributedPercent), rankedPercent(t.UnattributedPercent()))
+	// The gap is always shown. Hiding it when running as root would assume it
+	// falls to zero there, and it does not: kernel_task is PID 0, which cannot
+	// be read at any privilege. Only the remedy is conditional, because there
+	// is no remedy left once the ranking already covers every process.
 	if !t.Complete {
-		fmt.Fprintf(&b, "  ·  unattributed %s%% (needs sudo)",
-			formatPercent(t.UnattributedPercent()))
+		b.WriteString(" (needs sudo)")
 	}
 	b.WriteByte('\n')
 	if t.MemoryTotalBytes > 0 {
@@ -75,7 +78,7 @@ func TopTable(rows []top.Process, home string, width int) string {
 	body := make([][]string, len(rows))
 	for i, p := range rows {
 		cells := []string{
-			formatPercent(p.CPUPercent),
+			rankedPercent(p.CPUPercent),
 			Bytes(p.RSSBytes),
 			fmt.Sprint(p.PID),
 			p.Name,
@@ -99,16 +102,6 @@ func TopTable(rows []top.Process, home string, width int) string {
 		out += "\n" + forgottenMark + " nothing is looking after this — see `pcpm forgotten`\n"
 	}
 	return out
-}
-
-// formatPercent keeps a figure readable across the range it actually spans: a
-// process nudging a core reads 0.4, one saturating eight reads 800. Fixing the
-// decimals at one would make the large numbers wider than they are informative.
-func formatPercent(v float64) string {
-	if v >= 100 {
-		return fmt.Sprintf("%.0f", v)
-	}
-	return fmt.Sprintf("%.1f", v)
 }
 
 // jsonTop is the machine-readable view of a ranked process: the figures, plus

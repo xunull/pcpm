@@ -30,10 +30,11 @@ var topCmd = &cobra.Command{
 }
 
 func init() {
-	// The defaults shown here are placeholders: configuration is resolved in
-	// runTop, where a config file can raise them and an explicit flag still
-	// wins. Declaring them keeps `--help` honest about the built-in values.
-	topCmd.Flags().IntP("number", "n", top.DefaultRows, "how many processes to list")
+	// These defaults are the real ones: config.Load binds these flags, so a
+	// value here is used only when neither the config file nor the environment
+	// supplies one.
+	topCmd.Flags().IntP("number", "n", top.FitWindow,
+		fmt.Sprintf("how many processes to list (0 fills the terminal, or lists %d when there is none)", top.DefaultRows))
 	topCmd.Flags().DurationP("interval", "d", top.DefaultInterval, "how long to measure for")
 	topCmd.Flags().StringP("sort", "s", "cpu", "sort key: cpu | mem")
 	topCmd.Flags().StringP("output", "o", "table", "output format: table | json")
@@ -52,28 +53,10 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// Flags beat configuration, which beats the built-in defaults.
+	// config.Load resolved flag > env > file > default and validated the lot.
 	sortKey, rows, interval := cfg.Top.Sort, cfg.Top.Number, cfg.Top.Interval
-	if cmd.Flags().Changed("sort") {
-		sortFlag, _ := cmd.Flags().GetString("sort")
-		if sortKey, err = top.ParseSortKey(sortFlag); err != nil {
-			return err
-		}
-	}
-	if cmd.Flags().Changed("number") {
-		rows, _ = cmd.Flags().GetInt("number")
-	}
-	if cmd.Flags().Changed("interval") {
-		interval, _ = cmd.Flags().GetDuration("interval")
-	}
-	if interval <= 0 {
-		return fmt.Errorf("invalid interval %s: a rate needs time to pass", interval)
-	}
-	if rows < 1 {
-		return fmt.Errorf("invalid number of rows %d", rows)
-	}
 
-	opts := top.Options{Sort: sortKey, Owner: rankingOwner(), Limit: rows}
+	opts := top.Options{Sort: sortKey, Owner: rankingOwner()}
 	out := cmd.OutOrStdout()
 	once, _ := cmd.Flags().GetBool("once")
 
@@ -81,23 +64,21 @@ func runTop(cmd *cobra.Command, _ []string) error {
 	// redirected, so a non-terminal is itself a request for one frame.
 	if format == render.FormatTable && !once && isTerminal(out) {
 		home, _ := os.UserHomeDir()
-		// A reader who named a number gets that number; one who did not gets as
-		// much of the machine as the window holds, the way top(1) behaves.
-		fit := 0
-		if cmd.Flags().Changed("number") {
-			fit = rows
-		}
-		return tui.RunTop(cmd.Context(), top.Host{}, opts, interval, home, fit)
+		return tui.RunTop(cmd.Context(), top.Host{}, opts, cfg.Ignore, interval, home, rows)
 	}
 
-	frame, err := rankOnce(top.Host{}, interval, opts)
+	// There is no window to fill, so an unasked-for count becomes the default.
+	if rows == top.FitWindow {
+		rows = top.DefaultRows
+	}
+	frame, err := rankOnce(top.Host{}, cfg.Ignore, interval, opts)
 	if err != nil {
 		return err
 	}
 
 	switch format {
 	case render.FormatJSON:
-		body, err := render.TopJSON(frame.Rows, frame.Totals)
+		body, err := render.TopJSON(top.Top(frame.Rows, rows), frame.Totals)
 		if err != nil {
 			return fmt.Errorf("rendering json: %w", err)
 		}
@@ -106,7 +87,7 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		home, _ := os.UserHomeDir()
 		fmt.Fprint(out, render.TopHeader(frame.Totals))
 		fmt.Fprintln(out)
-		fmt.Fprint(out, render.TopTable(frame.Rows, home, terminalWidth(out)))
+		fmt.Fprint(out, render.TopTable(top.Top(frame.Rows, rows), home, terminalWidth(out)))
 	default:
 		return fmt.Errorf("unhandled output format %v", format)
 	}
@@ -114,8 +95,9 @@ func runTop(cmd *cobra.Command, _ []string) error {
 }
 
 // rankOnce measures for interval and returns one frame.
-func rankOnce(m top.Machine, interval time.Duration, opt top.Options) (*top.Frame, error) {
+func rankOnce(m top.Machine, ignore []string, interval time.Duration, opt top.Options) (*top.Frame, error) {
 	r := top.NewRanker(m, opt)
+	r.Ignore = ignore
 	if _, err := r.Next(time.Now()); err != nil {
 		return nil, fmt.Errorf("reading processes: %w", err)
 	}
@@ -132,8 +114,11 @@ func rankOnce(m top.Machine, interval time.Duration, opt top.Options) (*top.Fram
 
 // rankingOwner restricts the ranking to the invoking user unless pcpm is
 // running as root, which is the only way to read another user's figures.
-func rankingOwner() top.Owner {
-	uid := os.Getuid()
+func rankingOwner() top.Owner { return ownerForUID(os.Getuid()) }
+
+// ownerForUID is rankingOwner's decision without the process's own identity, so
+// that the root case can be exercised without being root.
+func ownerForUID(uid int) top.Owner {
 	if uid == 0 {
 		return top.AnyOwner()
 	}

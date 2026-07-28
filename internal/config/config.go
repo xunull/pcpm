@@ -37,6 +37,9 @@ type Config struct {
 // — they are the same measurement, so they cannot be set apart. Raising it
 // steadies the ordering at the cost of noticing a change later, and of a longer
 // wait before a one-shot answers.
+//
+// Number is top.FitWindow (0) unless someone asked for a count, by flag or by
+// file; the two are equivalent by design.
 type TopConfig struct {
 	Interval time.Duration
 	Number   int
@@ -79,11 +82,26 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v.SetDefault("watch.raw_retention", watch.DefaultRawRetention)
 	v.SetDefault("watch.rollup_retention", watch.DefaultRollupRetention)
 	v.SetDefault("top.interval", top.DefaultInterval)
-	v.SetDefault("top.number", top.DefaultRows)
+	v.SetDefault("top.number", top.FitWindow)
 	v.SetDefault("top.sort", "cpu")
 
 	v.SetEnvPrefix("PCPM")
 	v.AutomaticEnv()
+
+	// Binding the flags here keeps one resolution order for everything. Doing
+	// it in the command would mean a second, hand-rolled precedence rule that
+	// could disagree with this one — and a second place to validate.
+	if flags != nil {
+		for key, flag := range map[string]string{
+			"top.interval": "interval",
+			"top.number":   "number",
+			"top.sort":     "sort",
+		} {
+			if f := flags.Lookup(flag); f != nil {
+				_ = v.BindPFlag(key, f)
+			}
+		}
+	}
 
 	if explicitPath != "" {
 		v.SetConfigFile(explicitPath)
@@ -111,7 +129,7 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("top.sort: %w", err)
 	}
-	if n := v.GetInt("top.number"); n < 1 {
+	if n := v.GetInt("top.number"); n < 0 {
 		return Config{}, fmt.Errorf("top.number: %d is not a number of rows to show", n)
 	}
 	if d := v.GetDuration("top.interval"); d <= 0 {

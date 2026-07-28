@@ -176,8 +176,7 @@ func TestLimitKeepsTheBusiest(t *testing.T) {
 		known = append(known, proc.Process{PID: i})
 	}
 
-	got := Rank(at(0, before...), at(time.Second, after...), facts(known...),
-		Options{Limit: 3})
+	got := Top(Rank(at(0, before...), at(time.Second, after...), facts(known...), Options{}), 3)
 
 	if len(got) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(got))
@@ -236,12 +235,12 @@ type fakeMachine struct {
 	described map[int32]int
 	fail      map[int32]bool
 	facts     map[int32]proc.Process
-	host      HostReading
+	system    SystemReading
 }
 
 func (m *fakeMachine) Readings() ([]Reading, error) { return m.readings, nil }
 
-func (m *fakeMachine) Host() (HostReading, error) { return m.host, nil }
+func (m *fakeMachine) System() (SystemReading, error) { return m.system, nil }
 
 func (m *fakeMachine) Describe(pid int32) (proc.Process, error) {
 	if m.fail[pid] {
@@ -456,7 +455,7 @@ func TestDescendantsOfAForgottenRootAreMarkedToo(t *testing.T) {
 		proc.Process{PID: 200, PPID: 1, PGID: 200, Name: "tended", Cmdline: "tended"},
 	)
 
-	got := Forgotten(known)
+	got := Forgotten(known, nil)
 
 	if !got[100] {
 		t.Error("the forgotten root is not marked")
@@ -509,11 +508,11 @@ func TestRankerMarksForgottenRows(t *testing.T) {
 // could see, not merely the ones that fit on screen — otherwise the arithmetic
 // would change with the terminal's height.
 func TestAttributionCoversEveryProcessNotJustTheRowsShown(t *testing.T) {
-	m := &fakeMachine{host: HostReading{BusySeconds: 100, Cores: 10}}
+	m := &fakeMachine{system: SystemReading{BusySeconds: 100, Cores: 10}}
 	for i := int32(1); i <= 5; i++ {
 		m.readings = append(m.readings, Reading{PID: i, Created: epoch})
 	}
-	r := NewRanker(m, Options{Limit: 2})
+	r := NewRanker(m, Options{})
 
 	if _, err := r.Next(epoch); err != nil {
 		t.Fatal(err)
@@ -522,17 +521,20 @@ func TestAttributionCoversEveryProcessNotJustTheRowsShown(t *testing.T) {
 	for i := int32(1); i <= 5; i++ {
 		m.readings = append(m.readings, Reading{PID: i, Created: epoch, CPUSeconds: 0.1})
 	}
-	m.host = HostReading{BusySeconds: 101, Cores: 10}
+	m.system = SystemReading{BusySeconds: 101, Cores: 10}
 
 	frame, err := r.Next(epoch.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(frame.Rows) != 2 {
-		t.Fatalf("want 2 rows, got %d", len(frame.Rows))
+	if len(frame.Rows) != 5 {
+		t.Fatalf("a ranking covers every process it measured, got %d rows", len(frame.Rows))
 	}
-	// five processes at 10% each, of which only two are listed
+	if shown := len(Top(frame.Rows, 2)); shown != 2 {
+		t.Fatalf("Top should cut to 2, got %d", shown)
+	}
+	// five processes at 10% each, however many a screen would show
 	if frame.Totals.AttributedPercent != 50 {
 		t.Errorf("attributed = %v%%, want 50 — every visible process, not just the rows",
 			frame.Totals.AttributedPercent)
@@ -566,7 +568,7 @@ func TestCapacityIsEveryCoreFlatOut(t *testing.T) {
 func TestRankingEveryoneReportsItselfComplete(t *testing.T) {
 	m := &fakeMachine{
 		readings: []Reading{{PID: 1, Created: epoch}},
-		host:     HostReading{BusySeconds: 0, Cores: 4},
+		system:   SystemReading{BusySeconds: 0, Cores: 4},
 	}
 	r := NewRanker(m, Options{Owner: AnyOwner()})
 	if _, err := r.Next(epoch); err != nil {
@@ -587,5 +589,44 @@ func TestRankingEveryoneReportsItselfComplete(t *testing.T) {
 	frame2, _ := r2.Next(epoch.Add(time.Second))
 	if frame2.Totals.Complete {
 		t.Error("a ranking restricted to one user is not complete")
+	}
+}
+
+// The same setting silences the marker as silences `pcpm forgotten`. Otherwise
+// a process the reader has deliberately excused still carries the mark, and the
+// legend sends them to a command that lists nothing.
+func TestTheForgottenMarkerHonoursTheIgnoreList(t *testing.T) {
+	known := facts(
+		proc.Process{PID: 1, PPID: 0, PGID: 1, Name: "launchd", Cmdline: "/sbin/launchd"},
+		proc.Process{PID: 100, PPID: 1, PGID: 99, Name: "bun", Cmdline: "bun /x/gbrain serve"},
+		proc.Process{PID: 101, PPID: 100, PGID: 99, Name: "worker", Cmdline: "worker --busy"},
+	)
+
+	if !Forgotten(known, nil)[100] {
+		t.Fatal("expected pid 100 to be forgotten with no ignore list")
+	}
+	if got := Forgotten(known, []string{"bun"}); got[100] || got[101] {
+		t.Errorf("an ignored tree is still marked: %v", got)
+	}
+}
+
+// kernel_task is PID 0 and cannot be read at any privilege, so a root ranking
+// still leaves a residual. Hiding it there would be assuming it away.
+func TestUnattributedIsStillReportedWhenTheRankingIsComplete(t *testing.T) {
+	totals := Totals{BusyPercent: 700, AttributedPercent: 640, Complete: true}
+
+	if got := totals.UnattributedPercent(); got != 60 {
+		t.Errorf("UnattributedPercent = %v, want 60 even when complete", got)
+	}
+}
+
+func TestTopKeepsEverythingWhenNoLimitIsGiven(t *testing.T) {
+	rows := []Process{{Process: proc.Process{PID: 1}}, {Process: proc.Process{PID: 2}}}
+
+	if got := Top(rows, FitWindow); len(got) != 2 {
+		t.Errorf("Top with no limit returned %d rows, want 2", len(got))
+	}
+	if got := Top(rows, 5); len(got) != 2 {
+		t.Errorf("a limit above the row count returned %d rows, want 2", len(got))
 	}
 }

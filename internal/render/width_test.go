@@ -53,6 +53,32 @@ func TestPadToFillsToDisplayWidth(t *testing.T) {
 	}
 }
 
+// Emoji are double-width too, and a table full of them must line up the same
+// way a CJK one does.
+func TestGridAlignsEmojiCells(t *testing.T) {
+	rows := [][]string{
+		{"ok", "/one"},
+		{"🔥🔥", "/two"},
+		{"火", "/three"},
+	}
+
+	out := Grid([]string{"MARK", "DIR"}, nil, rows, 0)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+
+	want := -1
+	for i, ln := range lines {
+		dir := []string{"DIR", "/one", "/two", "/three"}[i]
+		got := displayWidth(ln[:strings.LastIndex(ln, dir)])
+		if i == 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Errorf("line %d starts DIR at column %d, want %d:\n%s", i, got, want, out)
+		}
+	}
+}
+
 // A terminal cannot render half of a wide character, so a cut that lands inside
 // one must fall back to before it, leaving the column one short rather than
 // spilling one over.

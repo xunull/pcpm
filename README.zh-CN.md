@@ -119,16 +119,16 @@ pcpm ports -o json
 
 ```console
 $ pcpm top -n 6
-CPU  171% of 1000% (10 cores)  ·  attributed 163%  ·  unattributed 7.6% (needs sudo)
+CPU  193% of 1000% (10 cores)  ·  attributed 170%  ·  unattributed 22.8% (needs sudo)
 MEM  49 GB / 64 GB
 
 %CPU     RSS    PID  NAME                           APP     DIR
-18.6  217 MB  56394  stable                         Warp    ~
-16.7  609 MB  61742  claude                                 …/open-source/pcpm
-10.5  298 MB  34442  Kimi Helper (Renderer)         Kimi    /
-10.0  352 MB  54999  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
- 8.3   23 MB  17320  pcpm                                   …/open-source/pcpm
- 7.4   36 MB  25121  bun                                    …/open-source/pcpm
+15.9  217 MB  56394  stable                         Warp    ~
+13.5  615 MB  61742  claude                                 …/open-source/pcpm
+11.2  217 MB  62625  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
+10.0  300 MB  34442  Kimi Helper (Renderer)         Kimi    /
+ 8.1   23 MB  61398  pcpm-r                                 …/open-source/pcpm
+ 7.9   28 MB  25922  pcpm                                   …/open-source/pcpm
 ```
 
 在终端里它会按间隔持续刷新,按 `q` 退出。一旦被管道或重定向接走,就只打一帧然后退出 —— 所以 `pcpm top | head`、`pcpm top -o json > f.json` 都不需要额外加开关;在终端里想只打一帧,用 `--once`。
@@ -179,7 +179,7 @@ $ pcpm top -n 400
 - **别人的进程返回 0,而不是报错。** macOS 上 `proc_pidinfo` 只对 root 或同 UID 的调用者给真值。这台机器上 205 个属于其他用户的进程,**全部**返回 CPU 0、RSS 0,且一个错误都没有。`ps` 和 `top` 之所以不受限,是因为 Apple 把它们做成了 setuid root(`4755` 与 `4555`);一个用 Homebrew 装的 Go 程序不是。
 - **`kernel_task` 根本读不到。** 它是 PID 0,gopsutil 直接拒绝 —— 即便是 root 也一样。
 
-与其把一堆明知为 0 的进程也排进去、从而把机器上真正最忙的那些排到榜尾(而排序恰恰是这个榜单存在的全部意义),pcpm 选择只排它能测准的,并把缺口量化出来。`sudo pcpm top` 除 `kernel_task` 外都能覆盖。理由见 [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md)。
+与其把一堆明知为 0 的进程也排进去、从而把机器上真正最忙的那些排到榜尾(而排序恰恰是这个榜单存在的全部意义),pcpm 选择只排它能测准的,并把缺口量化出来。`sudo pcpm top` 除 `kernel_task` 外都能覆盖 —— 这正是为什么加了 `sudo` 之后未归属那个数仍然会显示,只是不再提示 `sudo`。它并不会归零,而假装它会归零,恰恰是表头最不该做的事。理由见 [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md)。
 
 ### `top` 和 `watch` 不是同一个工具
 
@@ -305,7 +305,7 @@ watch:
 
 top:
   interval: 1s              # 既是刷新周期,也是每个数字的平均窗口
-  number: 10                # 打印几行(在终端里的实时视图会按窗口高度自适应)
+  number: 0                 # 0 = 按终端高度自适应;写任何其他值就是明确指定行数
   sort: cpu                 # cpu | mem
 ```
 

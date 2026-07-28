@@ -212,12 +212,16 @@ func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
 	}
 }
 
-// Running as root leaves no gap, so there is nothing to disclose and no remedy
-// to suggest.
-func TestTopHeaderSaysNothingAboutSudoWhenItCoversEverything(t *testing.T) {
+// Running as root removes the remedy but not the gap: kernel_task is PID 0 and
+// cannot be read at any privilege, so a residual remains and hiding it would be
+// assuming it away.
+func TestACompleteRankingStillReportsItsResidual(t *testing.T) {
 	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, AttributedPercent: 690, Complete: true})
 
-	if strings.Contains(out, "sudo") || strings.Contains(out, "unattributed") {
-		t.Errorf("a complete ranking should not mention a gap:\n%s", out)
+	if !strings.Contains(out, "unattributed 9.0%") {
+		t.Errorf("a complete ranking dropped its residual:\n%s", out)
+	}
+	if strings.Contains(out, "sudo") {
+		t.Errorf("a complete ranking has no remedy left to suggest:\n%s", out)
 	}
 }

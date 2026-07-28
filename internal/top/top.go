@@ -32,7 +32,14 @@ import (
 // responsiveness without also making the figures noisier.
 const (
 	DefaultInterval = time.Second
-	DefaultRows     = 10
+	// DefaultRows is how many rows to print where there is no window to fill.
+	DefaultRows = 10
+	// FitWindow, as a row count, means "as many as the terminal holds" — and
+	// DefaultRows where there is no terminal. It is the built-in default so
+	// that a number given in a config file behaves exactly like one given on
+	// the command line: both are an explicit choice, and only the absence of
+	// one lets the window decide.
+	FitWindow = 0
 )
 
 // Reading is one process's cumulative counters at one instant. Created is
@@ -50,13 +57,13 @@ type Reading struct {
 type Snapshot struct {
 	At       time.Time
 	Readings []Reading
-	Host     HostReading
+	System   SystemReading
 }
 
-// HostReading is the machine's own counters at one instant. None of it needs
+// SystemReading is the machine's own counters at one instant. None of it needs
 // privilege, which is what lets the gap left by the per-process figures be
 // stated as a quantity rather than left as an absence.
-type HostReading struct {
+type SystemReading struct {
 	BusySeconds      float64 // cumulative across all cores, idle excluded
 	Cores            int
 	MemoryUsedBytes  int64
@@ -82,6 +89,10 @@ type Totals struct {
 // UnattributedPercent is the busy CPU the ranking could not assign to any
 // process — kernel_task, which gopsutil refuses outright as PID 0, and the
 // system daemons that report zero to an unprivileged reader.
+//
+// It does not fall to zero when Complete is true. kernel_task cannot be read at
+// any privilege, so a root ranking still leaves a residual, and that residual is
+// worth seeing rather than assuming away.
 //
 // It is clamped at zero: the host counters and the per-process counters are
 // read microseconds apart, and a negative would be that skew, not a fact.
@@ -150,16 +161,29 @@ func AnyOwner() Owner { return Owner{} }
 // purpose is the ordering (ADR-0011).
 func OwnedBy(uid int32) Owner { return Owner{uid: uid, only: true} }
 
-func (o Owner) covers(p proc.Process) bool { return !o.only || p.UID == o.uid }
+// Covers reports whether a ranking with this owner includes the process.
+func (o Owner) Covers(p proc.Process) bool { return !o.only || p.UID == o.uid }
 
 // complete reports whether this owner leaves nothing out.
 func (o Owner) complete() bool { return !o.only }
 
 // Options shapes a ranking.
+//
+// There is deliberately no row limit here. A ranking always covers every
+// process it can measure, because the header has to account for all of them;
+// how many fit on a screen is a question about the terminal, answered by Top.
 type Options struct {
 	Sort  SortKey
 	Owner Owner
-	Limit int // rows to keep; 0 keeps all
+}
+
+// Top returns at most n rows from an ordered ranking, or all of them when n is
+// not positive.
+func Top(rows []Process, n int) []Process {
+	if n > 0 && len(rows) > n {
+		return rows[:n]
+	}
+	return rows
 }
 
 // Rank derives per-process rates from two snapshots and orders them, busiest
@@ -179,7 +203,7 @@ func Rank(before, after Snapshot, known map[int32]proc.Process, opt Options) []P
 	out := make([]Process, 0, len(after.Readings))
 	for _, now := range after.Readings {
 		facts, ok := known[now.PID]
-		if !ok || !opt.Owner.covers(facts) {
+		if !ok || !opt.Owner.Covers(facts) {
 			continue
 		}
 		was, ok := prior[now.PID]
@@ -204,9 +228,6 @@ func Rank(before, after Snapshot, known map[int32]proc.Process, opt Options) []P
 	}
 
 	Sort(out, opt.Sort)
-	if opt.Limit > 0 && len(out) > opt.Limit {
-		out = out[:opt.Limit]
-	}
 	return out
 }
 
@@ -251,7 +272,7 @@ func descending(a, b float64) int {
 type Machine interface {
 	Readings() ([]Reading, error)
 	Describe(pid int32) (proc.Process, error)
-	Host() (HostReading, error)
+	System() (SystemReading, error)
 }
 
 // Host measures the machine pcpm is running on.
@@ -287,14 +308,14 @@ func (Host) Readings() ([]Reading, error) {
 
 func (Host) Describe(pid int32) (proc.Process, error) { return proc.Describe(pid) }
 
-// Host reads the machine's own counters. Unlike the per-process figures these
+// System reads the machine's own counters. Unlike the per-process figures these
 // need no privilege, so they are true even when most of the processes behind
 // them are unreadable.
-func (Host) Host() (HostReading, error) {
-	h := HostReading{Cores: runtime.NumCPU()}
+func (Host) System() (SystemReading, error) {
+	h := SystemReading{Cores: runtime.NumCPU()}
 	times, err := cpu.Times(false)
 	if err != nil {
-		return HostReading{}, err
+		return SystemReading{}, err
 	}
 	if len(times) > 0 {
 		h.BusySeconds = times[0].Total() - times[0].Idle
@@ -327,7 +348,7 @@ func (s *Sampler) Take(now time.Time) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	host, err := s.machine.Host()
+	system, err := s.machine.System()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -348,7 +369,7 @@ func (s *Sampler) Take(now time.Time) (Snapshot, error) {
 		kept = append(kept, r)
 	}
 	s.facts = fresh
-	return Snapshot{At: now, Readings: kept, Host: host}, nil
+	return Snapshot{At: now, Readings: kept, System: system}, nil
 }
 
 // Facts returns what the sampler knows about the processes in its last
@@ -371,6 +392,10 @@ type Ranker struct {
 	previous Snapshot
 	started  bool
 	Options  Options
+
+	// Ignore silences the forgotten marker for the same trees `pcpm forgotten`
+	// would leave out, so one setting governs both.
+	Ignore []string
 }
 
 func NewRanker(m Machine, opt Options) *Ranker {
@@ -393,36 +418,31 @@ func (r *Ranker) Next(now time.Time) (*Frame, error) {
 
 	known := r.sampler.Facts()
 
-	// Rank everything first, then cut to the requested rows. The attributed
-	// figure has to cover every process pcpm could see, not merely the ones on
-	// screen, or the header's arithmetic would not add up.
-	unlimited := r.Options
-	unlimited.Limit = 0
-	rows := Rank(previous, snap, known, unlimited)
+	// The attributed figure has to cover every process pcpm could see, not
+	// merely the ones that will fit on screen, or the header's arithmetic
+	// would change with the terminal's height.
+	rows := Rank(previous, snap, known, r.Options)
 
 	var attributed float64
 	for _, p := range rows {
 		attributed += p.CPUPercent
 	}
 
-	unattended := Forgotten(known)
+	forgottenPIDs := Forgotten(known, r.Ignore)
 	for i := range rows {
-		rows[i].Forgotten = unattended[rows[i].PID]
-	}
-	if r.Options.Limit > 0 && len(rows) > r.Options.Limit {
-		rows = rows[:r.Options.Limit]
+		rows[i].Forgotten = forgottenPIDs[rows[i].PID]
 	}
 
 	elapsed := snap.At.Sub(previous.At).Seconds()
 	totals := Totals{
-		Cores:             snap.Host.Cores,
+		Cores:             snap.System.Cores,
 		AttributedPercent: attributed,
-		MemoryUsedBytes:   snap.Host.MemoryUsedBytes,
-		MemoryTotalBytes:  snap.Host.MemoryTotalBytes,
+		MemoryUsedBytes:   snap.System.MemoryUsedBytes,
+		MemoryTotalBytes:  snap.System.MemoryTotalBytes,
 		Complete:          r.Options.Owner.complete(),
 	}
 	if elapsed > 0 {
-		totals.BusyPercent = math.Max(snap.Host.BusySeconds-previous.Host.BusySeconds, 0) / elapsed * 100
+		totals.BusyPercent = math.Max(snap.System.BusySeconds-previous.System.BusySeconds, 0) / elapsed * 100
 	}
 
 	return &Frame{At: snap.At, Rows: rows, Totals: totals}, nil
@@ -475,15 +495,26 @@ func (p Process) Application() string { return Application(p.Exe) }
 // Every member is included, not only the root. The process actually burning the
 // CPU is frequently a child, and marking roots alone would leave the row a
 // reader is looking at unmarked while flagging one further down the list.
-func Forgotten(known map[int32]proc.Process) map[int32]bool {
+//
+// ignore silences the same trees `pcpm forgotten` would silence. Without it a
+// process the reader has deliberately excused still carries the mark, and the
+// legend sends them to a command that lists nothing.
+func Forgotten(known map[int32]proc.Process, ignore []string) map[int32]bool {
 	all := make([]proc.Process, 0, len(known))
 	for _, p := range known {
 		all = append(all, p)
 	}
 	ix := proc.NewIndex(all)
 
+	trees := forgotten.Detect(all, nil)
+	// A malformed pattern is the config's problem, reported where the config is
+	// read; here it simply silences nothing.
+	if kept, err := forgotten.ApplyIgnore(trees, ignore); err == nil {
+		trees = kept
+	}
+
 	marked := map[int32]bool{}
-	for _, tree := range forgotten.Detect(all, nil) {
+	for _, tree := range trees {
 		for _, pid := range ix.TreeMembers(tree.Root.PID) {
 			marked[pid] = true
 		}

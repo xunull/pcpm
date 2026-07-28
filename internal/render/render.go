@@ -310,13 +310,26 @@ func Bytes(n int64) string {
 	return fmt.Sprintf("%.0f %s", value, suffix)
 }
 
-// Percent renders a CPU figure. Values are unbounded above 100 — a tree can use
-// more than one core — so the width is not fixed.
-func Percent(p float64) string {
-	if p < 10 {
-		return fmt.Sprintf("%.1f%%", p)
+// Percent renders a CPU figure with its unit. Values are unbounded above 100 —
+// a tree can use more than one core — so the width is not fixed.
+func Percent(p float64) string { return percentTo(p, 10) + "%" }
+
+// rankedPercent renders a CPU figure for a column whose heading already carries
+// the unit, keeping a decimal place up to 100 rather than up to 10.
+//
+// A ranking has to justify its own ordering: two rows at 12.8 and 12.3 both
+// printed as "13" make the one above look arbitrarily placed. A summary of a
+// single target has nothing to compare itself against and does not need the
+// digit, which is why the two differ — and why they share the mechanism, so the
+// difference stays a decision rather than a drift.
+func rankedPercent(p float64) string { return percentTo(p, 100) }
+
+// percentTo prints one decimal below cutoff and none at or above it.
+func percentTo(p, cutoff float64) string {
+	if p < cutoff {
+		return fmt.Sprintf("%.1f", p)
 	}
-	return fmt.Sprintf("%.0f%%", p)
+	return fmt.Sprintf("%.0f", p)
 }
 
 // WatchSummaryText renders a Watch Target's history as a short human report:

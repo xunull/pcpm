@@ -12,10 +12,9 @@ import (
 	"github.com/xunull/pcpm/internal/top"
 )
 
-// topChrome is how many lines the view spends on things that are not rows: two
-// header lines, a blank, the column headings, the marker legend and its blank,
-// and the footer.
-const topChrome = 8
+// legendLines is what the marker's explanation costs when any row carries it:
+// the blank line above it and the line itself.
+const legendLines = 2
 
 // TopModel is the live ranking.
 //
@@ -40,15 +39,12 @@ type TopModel struct {
 	sort          top.SortKey
 }
 
-// NewTop builds the live ranking. rows of 0 fills whatever the terminal holds.
-func NewTop(m top.Machine, opt top.Options, interval time.Duration, home string, rows int) TopModel {
-	// The ranking itself is never limited: the header has to account for every
-	// process pcpm can see, and how many of them fit on screen is a question
-	// about the terminal rather than about the machine.
-	unlimited := opt
-	unlimited.Limit = 0
+// NewTop builds the live ranking. rows of top.FitWindow fills the terminal.
+func NewTop(m top.Machine, opt top.Options, ignore []string, interval time.Duration, home string, rows int) TopModel {
+	ranker := top.NewRanker(m, opt)
+	ranker.Ignore = ignore
 	return TopModel{
-		ranker:   top.NewRanker(m, unlimited),
+		ranker:   ranker,
 		interval: interval,
 		home:     home,
 		now:      time.Now,
@@ -155,15 +151,43 @@ func (m TopModel) View() string {
 }
 
 // visible is as many rows as were asked for, or as many as the window holds.
+//
+// The budget is measured from what the view will actually draw rather than
+// counted by hand, because the header's height and the legend's presence both
+// depend on the data.
 func (m TopModel) visible() []top.Process {
-	limit := m.rows
-	if limit == 0 {
-		limit = max(m.height-topChrome, 1)
+	if m.rows != top.FitWindow {
+		return top.Top(m.frame.Rows, m.rows)
 	}
-	if limit > len(m.frame.Rows) {
-		limit = len(m.frame.Rows)
+	rows := top.Top(m.frame.Rows, max(m.height-m.chrome(false), 1))
+	// The legend only appears once a marked row is on screen, and it costs two
+	// lines that were not budgeted for.
+	if anyForgotten(rows) {
+		rows = top.Top(m.frame.Rows, max(m.height-m.chrome(true), 1))
 	}
-	return m.frame.Rows[:limit]
+	return rows
+}
+
+// chrome is how many lines the view spends on things that are not rows.
+func (m TopModel) chrome(withLegend bool) int {
+	lines := strings.Count(render.TopHeader(m.frame.Totals), "\n") + // the header
+		1 + // the blank line under it
+		1 + // the column headings
+		1 + // the blank line above the footer
+		strings.Count(m.footer(), "\n")
+	if withLegend {
+		lines += legendLines
+	}
+	return lines
+}
+
+func anyForgotten(rows []top.Process) bool {
+	for _, p := range rows {
+		if p.Forgotten {
+			return true
+		}
+	}
+	return false
 }
 
 func (m TopModel) footer() string {
@@ -178,8 +202,8 @@ func (m TopModel) footer() string {
 }
 
 // RunTop opens the live ranking and blocks until the reader quits.
-func RunTop(ctx context.Context, m top.Machine, opt top.Options, interval time.Duration, home string, rows int) error {
-	program := tea.NewProgram(NewTop(m, opt, interval, home, rows),
+func RunTop(ctx context.Context, m top.Machine, opt top.Options, ignore []string, interval time.Duration, home string, rows int) error {
+	program := tea.NewProgram(NewTop(m, opt, ignore, interval, home, rows),
 		tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := program.Run()
 	return err

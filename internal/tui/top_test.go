@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -48,8 +49,8 @@ func (m *stubMachine) Describe(pid int32) (proc.Process, error) {
 	return proc.Process{}, nil
 }
 
-func (m *stubMachine) Host() (top.HostReading, error) {
-	return top.HostReading{BusySeconds: float64(m.reads) * 4, Cores: 10}, nil
+func (m *stubMachine) System() (top.SystemReading, error) {
+	return top.SystemReading{BusySeconds: float64(m.reads) * 4, Cores: 10}, nil
 }
 
 func stubbed() *stubMachine {
@@ -71,6 +72,22 @@ func stubbed() *stubMachine {
 	return m
 }
 
+// stubbedMany adds idle filler so that the window, not the data, decides how
+// many rows are shown. The filler sorts below both named processes on either
+// key, so tests that care about the ordering are unaffected.
+func stubbedMany(n int) *stubMachine {
+	m := stubbed()
+	for i := range n {
+		m.procs = append(m.procs, struct {
+			pid  int32
+			name string
+			cpu  float64
+			rss  int64
+		}{int32(100 + i), "idle", 0, 1})
+	}
+	return m
+}
+
 // advance drives the model through one full sample, the way the runtime would.
 func advance(t *testing.T, m TopModel) TopModel {
 	t.Helper()
@@ -80,7 +97,7 @@ func advance(t *testing.T, m TopModel) TopModel {
 }
 
 func newTestTop(machine top.Machine, rows int) TopModel {
-	m := NewTop(machine, top.Options{}, time.Second, "", rows)
+	m := NewTop(machine, top.Options{}, nil, time.Second, "", rows)
 	clock := topEpoch
 	m.now = func() time.Time {
 		clock = clock.Add(time.Second)
@@ -181,10 +198,10 @@ func TestAnExplicitRowCountIsHonouredWhateverTheHeight(t *testing.T) {
 // A reader who named no number gets as much of the machine as the window holds,
 // which changes when the window does.
 func TestRowCountFollowsTheWindowWhenNoneWasAskedFor(t *testing.T) {
-	m := advance(t, advance(t, newTestTop(stubbed(), 0)))
+	m := advance(t, advance(t, newTestTop(stubbedMany(40), 0)))
 
 	tall, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 60})
-	short, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: topChrome + 1})
+	short, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 10})
 
 	if len(tall.(TopModel).visible()) <= len(short.(TopModel).visible()) {
 		t.Errorf("a taller window did not show more rows: %d vs %d",
@@ -223,3 +240,77 @@ func TestEachFrameCostsOneReadOfTheMachine(t *testing.T) {
 		t.Errorf("the machine was read %d times for 4 frames", machine.reads)
 	}
 }
+
+// A view that draws more lines than the window has scrolls its own header off
+// the top. The budget must match what is actually drawn, in both the plain case
+// and the one where the marker legend appears.
+func TestTheViewNeverDrawsMoreLinesThanTheWindowHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		forgotten bool
+	}{
+		{"no legend", false},
+		{"with the marker legend", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := advance(t, advance(t, newTestTop(stubbedMany(40), 0)))
+			if tc.forgotten {
+				for i := range m.frame.Rows {
+					m.frame.Rows[i].Forgotten = true
+				}
+			}
+			for _, height := range []int{10, 24, 40} {
+				sized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: height})
+				view := sized.(TopModel)
+				drawn := len(strings.Split(strings.TrimSuffix(view.View(), "\n"), "\n"))
+				if drawn > height {
+					t.Errorf("height %d: the view drew %d lines", height, drawn)
+				}
+			}
+		})
+	}
+}
+
+// The view has to keep refreshing on its own, not stop after the first frame.
+func TestAFrameSchedulesTheNextTickAndATickSamplesAgain(t *testing.T) {
+	machine := stubbed()
+	m := newTestTop(machine, 0)
+
+	// a completed sample must schedule the next tick
+	next, cmd := m.Update(topFrameMsg{frame: nil})
+	if cmd == nil {
+		t.Fatal("a frame scheduled nothing; the view would stop refreshing")
+	}
+	if _, ok := cmd().(topTickMsg); !ok {
+		t.Errorf("a frame scheduled %T, want a tick", cmd())
+	}
+
+	// and a tick must sample again
+	before := machine.reads
+	_, cmd = next.(TopModel).Update(topTickMsg(topEpoch))
+	if cmd == nil {
+		t.Fatal("a tick produced no command")
+	}
+	if _, ok := cmd().(topFrameMsg); !ok {
+		t.Error("a tick did not produce a frame")
+	}
+	if machine.reads == before {
+		t.Error("a tick did not read the machine")
+	}
+}
+
+// An error has nowhere to go in a full-screen view, so it must end the program
+// rather than be redrawn forever.
+func TestAFailedReadEndsTheView(t *testing.T) {
+	m := newTestTop(stubbed(), 0)
+
+	_, cmd := m.Update(topFrameMsg{err: errFailedRead})
+	if cmd == nil {
+		t.Fatal("a read error produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("a read error did not end the view")
+	}
+}
+
+var errFailedRead = errors.New("cannot read processes")

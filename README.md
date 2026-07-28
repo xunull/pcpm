@@ -119,16 +119,16 @@ What is consuming CPU at this moment, busiest first.
 
 ```console
 $ pcpm top -n 6
-CPU  171% of 1000% (10 cores)  ·  attributed 163%  ·  unattributed 7.6% (needs sudo)
+CPU  193% of 1000% (10 cores)  ·  attributed 170%  ·  unattributed 22.8% (needs sudo)
 MEM  49 GB / 64 GB
 
 %CPU     RSS    PID  NAME                           APP     DIR
-18.6  217 MB  56394  stable                         Warp    ~
-16.7  609 MB  61742  claude                                 …/open-source/pcpm
-10.5  298 MB  34442  Kimi Helper (Renderer)         Kimi    /
-10.0  352 MB  54999  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
- 8.3   23 MB  17320  pcpm                                   …/open-source/pcpm
- 7.4   36 MB  25121  bun                                    …/open-source/pcpm
+15.9  217 MB  56394  stable                         Warp    ~
+13.5  615 MB  61742  claude                                 …/open-source/pcpm
+11.2  217 MB  62625  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
+10.0  300 MB  34442  Kimi Helper (Renderer)         Kimi    /
+ 8.1   23 MB  61398  pcpm-r                                 …/open-source/pcpm
+ 7.9   28 MB  25922  pcpm                                   …/open-source/pcpm
 ```
 
 In a terminal it redraws every interval until you press `q`. Piped or redirected it prints one frame and exits, so `pcpm top | head` and `pcpm top -o json > f.json` need no flag; `--once` forces one frame in a terminal too.
@@ -179,7 +179,7 @@ The rest is unattributed, and the header says so rather than quietly rounding it
 - **Another user's process reports zero, not an error.** On macOS `proc_pidinfo` gives real figures only to root or to the same UID. All 205 of the other users' processes on this machine returned CPU 0 and RSS 0 with no error at all. `ps` and `top` escape this because Apple ships them setuid root (`4755` and `4555`); a Go binary from Homebrew is not.
 - **`kernel_task` cannot be read at all.** It is PID 0, which gopsutil refuses outright — even as root.
 
-Rather than rank processes whose figures are known to be zero, and so sort the machine's genuinely busiest to the bottom of a list whose entire purpose is the ordering, pcpm ranks only what it can measure and states the gap. `sudo pcpm top` covers everything but `kernel_task`. The reasoning is in [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md).
+Rather than rank processes whose figures are known to be zero, and so sort the machine's genuinely busiest to the bottom of a list whose entire purpose is the ordering, pcpm ranks only what it can measure and states the gap. `sudo pcpm top` covers everything but `kernel_task` — which is why the unattributed figure is still shown under `sudo`, just without the suggestion. It does not fall to zero, and pretending it would is the one thing the header must not do. The reasoning is in [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md).
 
 ### `top` and `watch` are not the same tool
 
@@ -306,7 +306,7 @@ watch:
 
 top:
   interval: 1s              # both the refresh period and the window each figure averages
-  number: 10                # rows to print (a live view fills the terminal instead)
+  number: 0                 # 0 = fill the terminal; any other value is an explicit count
   sort: cpu                 # cpu | mem
 ```
 

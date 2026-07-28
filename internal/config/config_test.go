@@ -87,8 +87,10 @@ func TestTopDefaults(t *testing.T) {
 	if cfg.Top.Interval != top.DefaultInterval {
 		t.Errorf("interval = %s, want %s", cfg.Top.Interval, top.DefaultInterval)
 	}
-	if cfg.Top.Number != top.DefaultRows {
-		t.Errorf("number = %d, want %d", cfg.Top.Number, top.DefaultRows)
+	// Nobody asked for a count, so the window decides. A one-shot, having no
+	// window, falls back to top.DefaultRows.
+	if cfg.Top.Number != top.FitWindow {
+		t.Errorf("number = %d, want FitWindow", cfg.Top.Number)
 	}
 	if cfg.Top.Sort != top.ByCPU {
 		t.Errorf("sort = %v, want ByCPU", cfg.Top.Sort)
@@ -121,7 +123,7 @@ func TestTopReadsItsSectionFromTheFile(t *testing.T) {
 func TestBadTopSettingsFailByName(t *testing.T) {
 	for _, tc := range []struct{ name, body, wants string }{
 		{"sort", "top:\n  sort: sideways\n", "top.sort"},
-		{"number", "top:\n  number: 0\n", "top.number"},
+		{"number", "top:\n  number: -3\n", "top.number"},
 		{"interval", "top:\n  interval: 0s\n", "top.interval"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
