@@ -69,7 +69,7 @@ func TestGrid(t *testing.T) {
 	}
 
 	// width 0 => no truncation; header + 2 rows, columns aligned
-	full := Grid(header, rows, 0)
+	full := Grid(header, nil, rows, 0)
 	lines := strings.Split(strings.TrimSuffix(full, "\n"), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("want header + 2 rows, got %d lines:\n%s", len(lines), full)
@@ -83,7 +83,7 @@ func TestGrid(t *testing.T) {
 	//
 	// Measured in runes, not bytes: a terminal column holds a character, so a
 	// byte limit cuts a line carrying any non-ASCII short of the space it has.
-	narrow := Grid(header, rows, 30)
+	narrow := Grid(header, nil, rows, 30)
 	for _, ln := range strings.Split(strings.TrimSuffix(narrow, "\n"), "\n") {
 		if width := len([]rune(ln)); width > 30 {
 			t.Errorf("line exceeds width 30 (%d runes): %q", width, ln)
@@ -441,30 +441,12 @@ func TestJSONKeepsTheWholeCommandLine(t *testing.T) {
 }
 
 // Terminal columns hold characters, not bytes. Limiting by bytes cuts a line
-// carrying non-ASCII well short of the room it actually has.
-func TestGridMeasuresTheLastColumnInRunes(t *testing.T) {
-	rows := [][]string{{"1", strings.Repeat("目录", 40)}}
-
-	out := Grid([]string{"PID", "COMMAND"}, rows, 40)
-
-	for _, ln := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
-		if width := len([]rune(ln)); width > 40 {
-			t.Errorf("line is %d runes wide, want at most 40: %q", width, ln)
-		}
-	}
-	// and it should use most of the space rather than stopping a third of the way
-	body := strings.Split(strings.TrimSuffix(out, "\n"), "\n")[1]
-	if width := len([]rune(body)); width < 30 {
-		t.Errorf("only %d of 40 columns used; a byte limit would do this", width)
-	}
-}
-
 // A header is a fixed label. Eliding its middle turns COMMAND into "C…AND",
 // which reads as neither the word nor an abbreviation of it.
 func TestGridDoesNotElideTheMiddleOfAHeader(t *testing.T) {
 	rows := [][]string{{"1", strings.Repeat("x", 200)}}
 
-	out := Grid([]string{"PID", "COMMAND"}, rows, 12)
+	out := Grid([]string{"PID", "COMMAND"}, nil, rows, 12)
 	header := strings.Split(out, "\n")[0]
 
 	if strings.Contains(header, "C…AND") || strings.Contains(header, "…AND") {
@@ -482,5 +464,69 @@ func TestFitCommandFallsBackToAPrefixWhenVeryNarrow(t *testing.T) {
 	}
 	if len([]rune(got)) > 8 {
 		t.Errorf("result is %d runes wide, want at most 8: %q", len([]rune(got)), got)
+	}
+}
+
+// A name in a padded column decides where every later column starts. Measuring
+// it in bytes puts CJK four columns out for every word, which is how the DIR
+// column ends up drifting right on rows the reader most wants to compare.
+func TestGridAlignsWideCharactersWithTheRestOfTheColumn(t *testing.T) {
+	rows := [][]string{
+		{"100.0", "bash", "~/repo/pcpm"},
+		{"12.8", "汽水音乐 Helper", "/"},
+		{"4.8", "豆包浏览器", "~/y"},
+		{"7.9", "Code Helper", "~/x"},
+	}
+
+	out := Grid([]string{"%CPU", "NAME", "DIR"}, nil, rows, 0)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+
+	// Every line's last column must begin at the same screen offset.
+	want := -1
+	for i, ln := range lines {
+		at := displayWidth(ln[:strings.LastIndex(ln, strings.Fields(ln)[len(strings.Fields(ln))-1])])
+		if i == 0 {
+			want = at
+			continue
+		}
+		if at != want {
+			t.Errorf("line %d starts its last column at column %d, want %d:\n%s", i, at, want, out)
+		}
+	}
+}
+
+func TestGridRightAlignsTheColumnsAskedFor(t *testing.T) {
+	rows := [][]string{
+		{"100.0", "9285", "bash"},
+		{"12.8", "45570", "汽水音乐"},
+		{"4.8", "2886", "claude"},
+	}
+
+	out := Grid([]string{"%CPU", "PID", "NAME"}, []Align{Right, Right, Left}, rows, 0)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+
+	// Right-aligned means the figures end together: every %CPU cell finishes in
+	// the same screen column, which is the whole reason to compare them.
+	want := displayWidth("100.0")
+	for i, ln := range lines[1:] {
+		cell := headColumns(ln, want)
+		if strings.HasSuffix(cell, " ") {
+			t.Errorf("row %d: %%CPU cell %q is padded on the right, so it is not right-aligned:\n%s",
+				i, cell, out)
+		}
+	}
+}
+
+// A row of CJK is twice as wide on screen as it has runes. Fitting it to the
+// terminal by rune count emits a line that wraps.
+func TestGridFitsTheLastColumnToDisplayColumns(t *testing.T) {
+	rows := [][]string{{"1", strings.Repeat("目录", 40)}}
+
+	out := Grid([]string{"PID", "COMMAND"}, nil, rows, 40)
+
+	for _, ln := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if w := displayWidth(ln); w > 40 {
+			t.Errorf("line is %d columns wide, want at most 40: %q", w, ln)
+		}
 	}
 }
