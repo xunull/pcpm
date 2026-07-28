@@ -249,14 +249,16 @@ Piped or redirected output prints a text summary instead of control codes; `--pl
 `watch` also records what a target sends and receives, on macOS:
 
 ```console
-$ pcpm watch show 48535 --window 5m
-window   last 5m0s           samples 5 over 20s
-cpu      0.1%           peak 0.1%
+$ pcpm watch show 57731 --window 1m
+window   last 1m0s           samples 9 over 40s
+cpu      0.1%           peak 0.2%
 memory   31 MB          peak 31 MB
-network  ↓ 82 MB       ↑ 0 B   (covering 10s of 5m0s)
+network  ↓ 205 MB      ↑ 0 B   (covering 40s of 1m0s)
 ```
 
 That parenthesis is the point. The counter behind these bytes belongs to pcpm's reading of the machine rather than to the process, and starts again from zero whenever the collector does — so a total is only as good as the fraction of its window that was actually measured, and it says which fraction that was. CPU has no such caveat: its counter belongs to the process and survives a restart.
+
+If nothing was measuring — the source failed, or you turned it off — the line reads `not measured` rather than `↓ 0 B`. A failed source and an idle process store the same zero, so which it was is recorded alongside it.
 
 Turn it off with `network: false` under `watch:` if you would rather the collector did not hold a child process.
 

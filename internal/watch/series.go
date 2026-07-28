@@ -22,7 +22,15 @@ type Point struct {
 	// totals over a window are a sum of buckets rather than a difference
 	// between endpoints (ADR-0012).
 	Traffic Traffic
-	Procs   int
+	// Measured is how much time this bucket's samples actually span. It is not
+	// the bucket's width: a bucket holding one reading covers an instant, and a
+	// query may ask for a bucket finer than the collector ever sampled.
+	Measured time.Duration
+	// TrafficMeasured is how much of Measured had a working traffic source
+	// behind it. Zero with Measured non-zero means the bytes below are an
+	// absence, not a quiet line.
+	TrafficMeasured time.Duration
+	Procs           int
 	// Gap is true when the samples this bucket was derived from are further
 	// apart than collection should have made them — the machine was asleep, or
 	// the collector was not running. The figures remain correct averages; what
@@ -57,18 +65,33 @@ type Summary struct {
 	// total needs it to mean anything — a figure covering twenty-two of
 	// twenty-four hours and one covering all of them look identical, and a
 	// reader shown only the number will treat it as complete.
-	Covered   time.Duration
-	Window    time.Duration
-	Processes []ProcessUsage // busiest first
+	Covered time.Duration
+	// TrafficCovered is how much of the window had a working traffic source.
+	// Zero means the bytes above are an absence rather than a quiet line, and
+	// must not be rendered as a confident nought.
+	TrafficCovered time.Duration
+	Window         time.Duration
+	Processes      []ProcessUsage // busiest first
 }
 
 // FullyCovered reports whether the window has no material gap in it. A little
 // slack absorbs a tick that merely ran late, which is not the reader's problem.
-func (s Summary) FullyCovered() bool {
-	if s.Window <= 0 {
+func (s Summary) FullyCovered() bool { return covers(s.Covered, s.Window) }
+
+// TrafficWasMeasured reports whether anything at all stood behind the traffic
+// figures. False makes them an absence rather than a zero.
+func (s Summary) TrafficWasMeasured() bool { return s.TrafficCovered > 0 }
+
+// TrafficFullyCovered reports whether traffic was measured throughout.
+func (s Summary) TrafficFullyCovered() bool { return covers(s.TrafficCovered, s.Window) }
+
+// covers allows a little slack, which absorbs a tick that merely ran late —
+// not the reader's problem.
+func covers(have, window time.Duration) bool {
+	if window <= 0 {
 		return true
 	}
-	return s.Covered >= s.Window-s.Window/20
+	return have >= window-window/20
 }
 
 // gapFactor is how many sampling intervals may pass between two samples before
@@ -134,8 +157,10 @@ func (s *Store) series(targetID int64, only int32, from, to time.Time, bucket ti
 			acc[key] = sh
 		}
 		sh.cpuSeconds += d.cpuSeconds
-		sh.traffic.InBytes += d.traffic.InBytes
-		sh.traffic.OutBytes += d.traffic.OutBytes
+		sh.traffic = sh.traffic.Add(d.traffic)
+		if d.trafficMeasured {
+			sh.trafficSpan += d.span
+		}
 		sh.span += d.span
 		sh.rss = d.rss // the bucket's latest sample for this process
 		if d.span > 0 {
@@ -171,6 +196,8 @@ type share struct {
 	// traffic is bytes moved, which is additive — so a coarser bucket is built
 	// by summing finer ones, and a window's total is a sum of its buckets.
 	traffic Traffic
+	// trafficSpan is how much of span had a working source behind it.
+	trafficSpan time.Duration
 	// peak is the highest rate any single interval inside the bucket reached,
 	// which averaging the bucket would otherwise erase.
 	peak    float64
@@ -187,12 +214,14 @@ type share struct {
 // multiply the answer by the number of samples in the bucket.
 func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Duration) []Point {
 	type total struct {
-		cpuPercent float64
-		peak       float64
-		rss        int64
-		peakRSS    int64
-		traffic    Traffic
-		procs      int
+		cpuPercent  float64
+		peak        float64
+		rss         int64
+		peakRSS     int64
+		traffic     Traffic
+		measured    time.Duration
+		netMeasured time.Duration
+		procs       int
 	}
 	totals := map[int64]*total{}
 	for key, sh := range acc {
@@ -209,22 +238,27 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 		t.peak += sh.peak
 		t.rss += sh.rss
 		t.peakRSS += sh.peakRSS
-		t.traffic.InBytes += sh.traffic.InBytes
-		t.traffic.OutBytes += sh.traffic.OutBytes
+		t.traffic = t.traffic.Add(sh.traffic)
+		// Processes in a bucket run concurrently, so the time the bucket covers
+		// is the longest of them rather than their sum.
+		t.measured = max(t.measured, sh.span)
+		t.netMeasured = max(t.netMeasured, sh.trafficSpan)
 		t.procs++
 	}
 
 	out := make([]Point, 0, len(totals))
 	for at, t := range totals {
 		out = append(out, Point{
-			At:             time.UnixMilli(at * bucket.Milliseconds()),
-			CPUPercent:     t.cpuPercent,
-			PeakCPUPercent: max(t.peak, t.cpuPercent),
-			RSSBytes:       t.rss,
-			PeakRSSBytes:   max(t.peakRSS, t.rss),
-			Traffic:        t.traffic,
-			Procs:          t.procs,
-			Gap:            gaps[at],
+			At:              time.UnixMilli(at * bucket.Milliseconds()),
+			CPUPercent:      t.cpuPercent,
+			PeakCPUPercent:  max(t.peak, t.cpuPercent),
+			RSSBytes:        t.rss,
+			PeakRSSBytes:    max(t.peakRSS, t.rss),
+			Traffic:         t.traffic,
+			Measured:        t.measured,
+			TrafficMeasured: t.netMeasured,
+			Procs:           t.procs,
+			Gap:             gaps[at],
 		})
 	}
 	slices.SortFunc(out, func(a, b Point) int { return a.At.Compare(b.At) })
@@ -247,7 +281,10 @@ type delta struct {
 	// nothing rather than discarding the interval: for CPU a fall means a
 	// different process, but for traffic it only means the source restarted.
 	traffic Traffic
-	gap     bool
+	// trafficMeasured is true only when both readings had a working source: a
+	// difference is only as trustworthy as its worse end.
+	trafficMeasured bool
+	gap             bool
 }
 
 // cpuDeltas turns cumulative counters into per-interval usage, one process at a
@@ -283,8 +320,9 @@ func cpuDeltas(samples []Sample) []delta {
 					InBytes:  rise(prev.Traffic.InBytes, cur.Traffic.InBytes),
 					OutBytes: rise(prev.Traffic.OutBytes, cur.Traffic.OutBytes),
 				},
-				span: span,
-				rss:  cur.RSSBytes,
+				trafficMeasured: prev.TrafficMeasured && cur.TrafficMeasured,
+				span:            span,
+				rss:             cur.RSSBytes,
 			})
 		}
 	}
@@ -356,12 +394,19 @@ func (s *Store) Summary(targetID int64, from, to time.Time, bucket time.Duration
 	for _, p := range points {
 		sum.PeakCPUPercent = max(sum.PeakCPUPercent, p.PeakCPUPercent)
 		sum.PeakRSSBytes = max(sum.PeakRSSBytes, p.PeakRSSBytes)
-		sum.Traffic.InBytes += p.Traffic.InBytes
-		sum.Traffic.OutBytes += p.Traffic.OutBytes
+		sum.Traffic = sum.Traffic.Add(p.Traffic)
 	}
-	// Every bucket that produced a point is a bucket the window was measured
-	// through; the rest of the window is what nobody was watching.
-	sum.Covered = min(time.Duration(len(points))*bucket, sum.Window)
+	// Coverage is time actually measured, summed from the points themselves.
+	// Counting buckets instead was wrong in both directions: a query asking for
+	// a bucket finer than the sampling cadence under-reported, and a coarse
+	// bucket holding a single reading claimed the whole bucket.
+	var covered, netCovered time.Duration
+	for _, p := range points {
+		covered += p.Measured
+		netCovered += p.TrafficMeasured
+	}
+	sum.Covered = min(covered, sum.Window)
+	sum.TrafficCovered = min(netCovered, sum.Window)
 	if len(points) > 0 {
 		last := points[len(points)-1]
 		sum.CurrentCPUPercent = last.CPUPercent

@@ -101,7 +101,7 @@ type SeriesAccessor func(watch.Point) (value, peak float64)
 // CPUSeries draws CPU: the bucket's rate, capped at its peak.
 func CPUSeries(p watch.Point) (float64, float64) { return p.CPUPercent, p.PeakCPUPercent }
 
-// TrafficSeries draws throughput.
+// TrafficSeries draws Traffic as bytes per second.
 //
 // A Point carries bytes *moved during its bucket*, so turning that into a rate
 // needs the bucket's width — which is why this is built per query rather than

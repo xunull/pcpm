@@ -76,6 +76,7 @@ type supervisor struct {
 	reader   *reader
 	restarts int
 	gaveUp   error
+	closed   bool
 }
 
 func startSupervisor(newCmd func() *exec.Cmd) (*supervisor, error) {
@@ -94,7 +95,10 @@ func startSupervisor(newCmd func() *exec.Cmd) (*supervisor, error) {
 // a source is only worth restarting when something wants to read it, and this
 // keeps the supervisor free of a goroutine that would outlive its usefulness.
 func (s *supervisor) ensure() {
-	if s.gaveUp != nil || s.reader == nil {
+	// Without the closed check, reading a snapshot after Close would notice the
+	// dead child and start a fresh one — resurrecting the process the caller
+	// had just shut down.
+	if s.closed || s.gaveUp != nil || s.reader == nil {
 		return
 	}
 	failure := s.reader.Err()
@@ -147,10 +151,13 @@ func (s *supervisor) Err() error {
 func (s *supervisor) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.reader != nil {
-		return s.reader.Close()
+	s.closed = true
+	if s.reader == nil {
+		return nil
 	}
-	return nil
+	err := s.reader.Close()
+	s.reader = nil
+	return err
 }
 
 func startReader(cmd *exec.Cmd, acc *accumulator) (*reader, error) {

@@ -150,11 +150,11 @@ func (c *Collector) Tick() error {
 	// One reading for the whole machine, not one per tree member: the source
 	// reports every process together, and asking it repeatedly would re-copy
 	// the same map for each process being watched.
-	traffic := c.trafficSnapshot()
+	traffic, trafficWorking := c.trafficSnapshot()
 
 	sampled, ended := 0, 0
 	for _, t := range targets {
-		result := c.sampleTarget(t, now, traffic)
+		result := c.sampleTarget(t, now, traffic, trafficWorking)
 		if result.alive == 0 {
 			// Every process in the tree is gone. Record when, and stop
 			// measuring it; what it did beforehand stays.
@@ -272,21 +272,21 @@ func survivors(known []proc.Process, ix proc.Index) []proc.Process {
 // working source. A nil map reads as zero for every process, which is why the
 // distinction between "no traffic" and "no measurement" has to be carried
 // elsewhere rather than inferred from the figures.
-func (c *Collector) trafficSnapshot() map[int32]Traffic {
+func (c *Collector) trafficSnapshot() (map[int32]Traffic, bool) {
 	if c.Traffic == nil {
-		return nil
+		return nil, false
 	}
 	if err := c.Traffic.Err(); err != nil {
 		if !c.trafficReported {
 			c.trafficReported = true
 			c.report(fmt.Sprintf("traffic is no longer being measured: %v", err))
 		}
-		return nil
+		return nil, false
 	}
-	return c.Traffic.Snapshot()
+	return c.Traffic.Snapshot(), true
 }
 
-func (c *Collector) sampleTarget(t Target, now time.Time, traffic map[int32]Traffic) sampleResult {
+func (c *Collector) sampleTarget(t Target, now time.Time, traffic map[int32]Traffic, trafficWorking bool) sampleResult {
 	members := c.members[t.ID]
 	if len(members) == 0 {
 		return sampleResult{}
@@ -301,12 +301,13 @@ func (c *Collector) sampleTarget(t Target, now time.Time, traffic map[int32]Traf
 			continue
 		}
 		samples = append(samples, Sample{
-			PID:        member.PID,
-			Created:    member.Created,
-			Name:       member.Name,
-			CPUSeconds: usage.CPUSeconds,
-			RSSBytes:   usage.RSSBytes,
-			Traffic:    traffic[member.PID],
+			PID:             member.PID,
+			Created:         member.Created,
+			Name:            member.Name,
+			CPUSeconds:      usage.CPUSeconds,
+			RSSBytes:        usage.RSSBytes,
+			Traffic:         traffic[member.PID],
+			TrafficMeasured: trafficWorking,
 		})
 	}
 	if len(samples) == 0 {

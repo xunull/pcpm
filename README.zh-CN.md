@@ -249,14 +249,16 @@ MEMORY   now 1.0 GB   peak 1.0 GB
 在 macOS 上,`watch` 还会记录目标收发了多少:
 
 ```console
-$ pcpm watch show 48535 --window 5m
-window   last 5m0s           samples 5 over 20s
-cpu      0.1%           peak 0.1%
+$ pcpm watch show 57731 --window 1m
+window   last 1m0s           samples 9 over 40s
+cpu      0.1%           peak 0.2%
 memory   31 MB          peak 31 MB
-network  ↓ 82 MB       ↑ 0 B   (covering 10s of 5m0s)
+network  ↓ 205 MB      ↑ 0 B   (covering 40s of 1m0s)
 ```
 
 **括号里那句才是重点。** 这些字节背后的计数器属于 pcpm 对机器的观测,而不属于进程 —— 采集器每次启动它都从零开始。所以总量的可信度,取决于它的时间窗口里有多少是真被测到的,而它会把这个比例说出来。CPU 没有这个问题:那个计数器属于进程,重启也还在。
+
+如果当时**根本没在测** —— 源挂了,或者你关掉了 —— 这一行显示的是 `not measured` 而不是 `↓ 0 B`。源失败和进程空闲在数据库里存的是同一个零,所以"当时到底有没有在测"是单独记下来的。
 
 不想让采集器常驻一个子进程的话,在 `watch:` 下写 `network: false` 关掉。
 

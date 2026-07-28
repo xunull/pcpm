@@ -12,6 +12,10 @@ import (
 // feedAll pushes lines through an accumulator, failing the test on any error.
 func feedAll(t *testing.T, a *accumulator, lines ...string) {
 	t.Helper()
+	if !a.sawHeader {
+		// Every real stream opens with one; tests care about what follows.
+		lines = append([]string{trafficHeader}, lines...)
+	}
 	for _, l := range lines {
 		if err := a.feed(l); err != nil {
 			t.Fatalf("feed(%q): %v", l, err)
@@ -107,7 +111,7 @@ func TestPIDComesFromTheLastDot(t *testing.T) {
 func TestHeaderRowsAreSkipped(t *testing.T) {
 	a := newAccumulator()
 
-	feedAll(t, a, trafficHeader, "bun.100,1000,0,", trafficHeader, "bun.100,2000,0,")
+	feedAll(t, a, "bun.100,1000,0,", trafficHeader, "bun.100,2000,0,")
 
 	if got := a.snapshot()[100].InBytes; got != 1000 {
 		t.Errorf("InBytes = %d, want 1000", got)
@@ -353,5 +357,32 @@ func TestAChangedFormatIsNotRetried(t *testing.T) {
 	}
 	if !errors.Is(s.Err(), ErrTrafficFormat) {
 		t.Errorf("the failure should be recognisable as a format change, got %v", s.Err())
+	}
+}
+
+// Checking only the lines that look like a header leaves a hole: a stream that
+// stopped emitting one entirely would be read column-by-position in silence.
+func TestMeasurementsBeforeAnyHeaderAreRefused(t *testing.T) {
+	a := newAccumulator()
+
+	err := a.feed("bun.100,1000,0,")
+
+	if err == nil {
+		t.Fatal("figures were accepted without the format ever being confirmed")
+	}
+	if !errors.Is(err, ErrTrafficFormat) {
+		t.Errorf("want a format error, got %v", err)
+	}
+}
+
+// A restarted child proves its format again rather than inheriting the last
+// one's clean bill of health.
+func TestARestartRequiresTheHeaderAgain(t *testing.T) {
+	a := newAccumulator()
+	feedAll(t, a, "bun.100,1000,0,")
+	a.restart()
+
+	if err := a.feed("bun.100,2000,0,"); err == nil {
+		t.Error("a restarted source was trusted without re-confirming its format")
 	}
 }

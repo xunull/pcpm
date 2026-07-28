@@ -537,7 +537,7 @@ func TestGridFitsTheLastColumnToDisplayColumns(t *testing.T) {
 func TestTrafficLineDisclosesPartialCoverage(t *testing.T) {
 	partial := TrafficLine(watch.Summary{
 		Traffic: watch.Traffic{InBytes: 4 << 30, OutBytes: 380 << 20},
-		Covered: 22 * time.Hour, Window: 24 * time.Hour,
+		Covered: 22 * time.Hour, TrafficCovered: 22 * time.Hour, Window: 24 * time.Hour,
 	})
 	if !strings.Contains(partial, "covering") || !strings.Contains(partial, "22h") {
 		t.Errorf("a short window did not say so: %q", partial)
@@ -545,7 +545,7 @@ func TestTrafficLineDisclosesPartialCoverage(t *testing.T) {
 
 	full := TrafficLine(watch.Summary{
 		Traffic: watch.Traffic{InBytes: 4 << 30},
-		Covered: 24 * time.Hour, Window: 24 * time.Hour,
+		Covered: 24 * time.Hour, TrafficCovered: 24 * time.Hour, Window: 24 * time.Hour,
 	})
 	if strings.Contains(full, "covering") {
 		t.Errorf("a fully covered window should not caveat itself: %q", full)
@@ -562,5 +562,36 @@ func TestTrafficSeriesTurnsBucketBytesIntoARate(t *testing.T) {
 	// A zero-width bucket must not divide by zero.
 	if v, _ := TrafficSeries(0)(watch.Point{Traffic: watch.Traffic{InBytes: 5}}); v != 0 {
 		t.Errorf("a zero bucket gave %v", v)
+	}
+}
+
+// A source that failed and a process that sent nothing are the same zero in the
+// database. Printing "0 B" for the first is a confident statement that nothing
+// moved — the one outcome the design set out to avoid.
+func TestTrafficLineSaysAbsenceRatherThanZero(t *testing.T) {
+	line := TrafficLine(watch.Summary{
+		Covered: time.Hour, TrafficCovered: 0, Window: time.Hour,
+	})
+
+	if strings.Contains(line, "0 B") {
+		t.Errorf("an unmeasured window rendered as a figure: %q", line)
+	}
+	if !strings.Contains(line, "not measured") {
+		t.Errorf("an unmeasured window should say so, got %q", line)
+	}
+}
+
+// Traffic can stop being measured while CPU carries on, so its coverage is its
+// own — reusing the samples' coverage would call a failed source fully covered.
+func TestTrafficCoverageIsSeparateFromSampleCoverage(t *testing.T) {
+	line := TrafficLine(watch.Summary{
+		Traffic:        watch.Traffic{InBytes: 1 << 30},
+		Covered:        24 * time.Hour, // CPU sampled throughout
+		TrafficCovered: 6 * time.Hour,
+		Window:         24 * time.Hour,
+	})
+
+	if !strings.Contains(line, "covering 6h") {
+		t.Errorf("traffic coverage was not disclosed independently: %q", line)
 	}
 }

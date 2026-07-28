@@ -20,6 +20,13 @@ type Traffic struct {
 	OutBytes int64
 }
 
+// Add returns the two totals summed. Traffic is additive at every hop — across
+// processes, across buckets, and across a re-aggregation to a coarser bucket —
+// which is what lets a window's total be a sum rather than a difference.
+func (t Traffic) Add(other Traffic) Traffic {
+	return Traffic{InBytes: t.InBytes + other.InBytes, OutBytes: t.OutBytes + other.OutBytes}
+}
+
 // trafficHeader is the row the source emits at the start of every sample.
 //
 // It is checked rather than skipped. The format carries no compatibility
@@ -40,6 +47,11 @@ type accumulator struct {
 	// the source last started, so its first reading seeds rather than counts.
 	last  map[int32]Traffic
 	total map[int32]Traffic
+	// sawHeader records that the format was confirmed. Checking only the lines
+	// that look like a header leaves a hole: a stream that stopped emitting one
+	// would be read column-by-position without complaint, which is the silent
+	// wrongness the check exists to prevent.
+	sawHeader bool
 }
 
 func newAccumulator() *accumulator {
@@ -66,7 +78,12 @@ func (a *accumulator) feed(line string) error {
 				"(columns can no longer be trusted by position)",
 				ErrTrafficFormat, line, trafficHeader)
 		}
+		a.sawHeader = true
 		return nil
+	}
+	if !a.sawHeader {
+		return fmt.Errorf("%w: measurements arrived before any recognised header "+
+			"(expected %q first)", ErrTrafficFormat, trafficHeader)
 	}
 
 	record, err := csv.NewReader(strings.NewReader(line)).Read()
@@ -97,7 +114,12 @@ func (a *accumulator) feed(line string) error {
 // restart forgets where each process was last seen, so that the first reading
 // after the source is restarted seeds a new baseline instead of arriving as one
 // enormous delta. The totals already accumulated are kept.
-func (a *accumulator) restart() { a.last = make(map[int32]Traffic) }
+func (a *accumulator) restart() {
+	a.last = make(map[int32]Traffic)
+	// A new child must prove its format again rather than inherit the last
+	// one's clean bill of health.
+	a.sawHeader = false
+}
 
 // snapshot copies the counters out. The caller holds it while writing Samples,
 // and a later reading must not change figures already being stored.

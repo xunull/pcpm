@@ -106,10 +106,17 @@ func encodeJSON(v any) (string, error) {
 // than moved — and a total shown without saying how much of its window it
 // accounts for will be read as complete and acted on (ADR-0012).
 func TrafficLine(sum watch.Summary) string {
+	// Nothing stood behind the figures. Printing "0 B" here would be a
+	// confident statement that nothing moved, which is the one outcome this
+	// whole design set out to avoid: a zero and an absence look identical in a
+	// chart, and the reader believes the zero.
+	if !sum.TrafficWasMeasured() {
+		return "not measured"
+	}
 	line := fmt.Sprintf("↓ %-11s ↑ %s", Bytes(sum.Traffic.InBytes), Bytes(sum.Traffic.OutBytes))
-	if !sum.FullyCovered() {
+	if !sum.TrafficFullyCovered() {
 		line += fmt.Sprintf("   (covering %s of %s)",
-			roundDuration(sum.Covered), roundDuration(sum.Window))
+			roundDuration(sum.TrafficCovered), roundDuration(sum.Window))
 	}
 	return line
 }
@@ -117,14 +124,10 @@ func TrafficLine(sum watch.Summary) string {
 // roundDuration trims a duration to something a person reads at a glance; the
 // exact seconds of a coverage figure say nothing the minutes do not.
 func roundDuration(d time.Duration) time.Duration {
-	switch {
-	case d >= time.Hour:
+	if d >= time.Hour {
 		return d.Round(time.Minute)
-	case d >= time.Minute:
-		return d.Round(time.Second)
-	default:
-		return d.Round(time.Second)
 	}
+	return d.Round(time.Second)
 }
 
 // jsonForgotten is the machine-readable view of a forgotten process tree: every
@@ -433,7 +436,7 @@ func WatchSummaryJSON(s watch.Status, sum watch.Summary, window time.Duration) (
 		NetIn      int64              `json:"net_in_bytes"`
 		NetOut     int64              `json:"net_out_bytes"`
 		CoveredSec float64            `json:"covered_seconds"`
-		WindowSec  float64            `json:"window_seconds_covered"`
+		NetCovered float64            `json:"net_covered_seconds"`
 		Processes  []jsonProcessUsage `json:"processes"`
 	}{
 		Target:     watchTargetView(s),
@@ -446,7 +449,7 @@ func WatchSummaryJSON(s watch.Status, sum watch.Summary, window time.Duration) (
 		NetIn:      sum.Traffic.InBytes,
 		NetOut:     sum.Traffic.OutBytes,
 		CoveredSec: sum.Covered.Seconds(),
-		WindowSec:  sum.Window.Seconds(),
+		NetCovered: sum.TrafficCovered.Seconds(),
 		Processes:  make([]jsonProcessUsage, len(sum.Processes)),
 	}
 	if !sum.First.IsZero() {

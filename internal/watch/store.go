@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 11
+const schemaVersion = 13
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -112,6 +112,15 @@ var migrations = []string{
 	// totals over a window are a sum rather than a difference (ADR-0012).
 	`ALTER TABLE rollup ADD COLUMN net_in_bytes INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE rollup ADD COLUMN net_out_bytes INTEGER NOT NULL DEFAULT 0`,
+
+	// 11 -> 13: whether Traffic was being measured at all when a Sample was
+	// taken. Without it, a source that had failed stores zeroes that are
+	// indistinguishable from a process sending nothing — and a chart showing a
+	// confident flat zero is the one outcome the whole design set out to avoid
+	// (ADR-0012). Rows written before this defaults to "not measured", which is
+	// true of them: nothing was measuring it.
+	`ALTER TABLE sample ADD COLUMN net_measured INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE rollup ADD COLUMN net_span_ms INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a

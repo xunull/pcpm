@@ -168,7 +168,7 @@ func seedTraffic(t *testing.T, s *Store, targetID int64, base time.Time, pid int
 		when := base.Add(time.Duration(i*5) * time.Second)
 		err := s.SaveSamples(targetID, when, []Sample{{
 			PID: pid, Name: "proc", CPUSeconds: float64(i), RSSBytes: 100 << 20,
-			Traffic: Traffic{InBytes: c, OutBytes: c / 2},
+			Traffic: Traffic{InBytes: c, OutBytes: c / 2}, TrafficMeasured: true,
 		}})
 		if err != nil {
 			t.Fatalf("SaveSamples: %v", err)
