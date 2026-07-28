@@ -10,10 +10,14 @@ package top
 
 import (
 	"fmt"
+	"math"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/process"
 
 	"github.com/xunull/pcpm/internal/forgotten"
@@ -30,11 +34,52 @@ type Reading struct {
 	RSSBytes   int64
 }
 
-// Snapshot is every process that could be measured, at one instant.
+// Snapshot is every process that could be measured, at one instant, together
+// with what the machine as a whole was doing.
 type Snapshot struct {
 	At       time.Time
 	Readings []Reading
+	Host     HostReading
 }
+
+// HostReading is the machine's own counters at one instant. None of it needs
+// privilege, which is what lets the gap left by the per-process figures be
+// stated as a quantity rather than left as an absence.
+type HostReading struct {
+	BusySeconds      float64 // cumulative across all cores, idle excluded
+	Cores            int
+	MemoryUsedBytes  int64
+	MemoryTotalBytes int64
+}
+
+// Totals is what the machine did over a window, and how much of it the ranking
+// could account for.
+type Totals struct {
+	Cores int
+	// BusyPercent is per core on the same scale as a row: 699 means just under
+	// seven of ten cores were occupied.
+	BusyPercent       float64
+	AttributedPercent float64
+	MemoryUsedBytes   int64
+	MemoryTotalBytes  int64
+	// Complete says the ranking covered every process on the machine, which is
+	// only true when running as root. When false, the unattributed figure has a
+	// remedy worth naming.
+	Complete bool
+}
+
+// UnattributedPercent is the busy CPU the ranking could not assign to any
+// process — kernel_task, which gopsutil refuses outright as PID 0, and the
+// system daemons that report zero to an unprivileged reader.
+//
+// It is clamped at zero: the host counters and the per-process counters are
+// read microseconds apart, and a negative would be that skew, not a fact.
+func (t Totals) UnattributedPercent() float64 {
+	return math.Max(t.BusyPercent-t.AttributedPercent, 0)
+}
+
+// Capacity is what every core in the machine running flat out would read.
+func (t Totals) Capacity() float64 { return float64(t.Cores) * 100 }
 
 // Process is one row of a ranking: a process, and what it consumed over the
 // window between the two snapshots it was derived from.
@@ -95,6 +140,9 @@ func AnyOwner() Owner { return Owner{} }
 func OwnedBy(uid int32) Owner { return Owner{uid: uid, only: true} }
 
 func (o Owner) covers(p proc.Process) bool { return !o.only || p.UID == o.uid }
+
+// complete reports whether this owner leaves nothing out.
+func (o Owner) complete() bool { return !o.only }
 
 // Options shapes a ranking.
 type Options struct {
@@ -179,7 +227,8 @@ func descending(a, b float64) int {
 }
 
 // Machine is the host as a ranking needs it: a cheap way to read every
-// process's counters, and a dearer way to learn what a process is.
+// process's counters, a dearer way to learn what a process is, and the
+// machine's own totals.
 //
 // The split is the whole reason a ranking can refresh once a second. Measured
 // on a machine running 1100 processes: the counters cost about 30ms all told,
@@ -188,6 +237,7 @@ func descending(a, b float64) int {
 type Machine interface {
 	Readings() ([]Reading, error)
 	Describe(pid int32) (proc.Process, error)
+	Host() (HostReading, error)
 }
 
 // Host measures the machine pcpm is running on.
@@ -223,6 +273,26 @@ func (Host) Readings() ([]Reading, error) {
 
 func (Host) Describe(pid int32) (proc.Process, error) { return proc.Describe(pid) }
 
+// Host reads the machine's own counters. Unlike the per-process figures these
+// need no privilege, so they are true even when most of the processes behind
+// them are unreadable.
+func (Host) Host() (HostReading, error) {
+	h := HostReading{Cores: runtime.NumCPU()}
+	times, err := cpu.Times(false)
+	if err != nil {
+		return HostReading{}, err
+	}
+	if len(times) > 0 {
+		h.BusySeconds = times[0].Total() - times[0].Idle
+	}
+	// Memory is worth less than CPU here and should not fail the reading.
+	if vm, err := mem.VirtualMemory(); err == nil && vm != nil {
+		h.MemoryUsedBytes = int64(vm.Used)
+		h.MemoryTotalBytes = int64(vm.Total)
+	}
+	return h, nil
+}
+
 // Sampler takes snapshots, remembering what does not change between them.
 type Sampler struct {
 	machine Machine
@@ -243,6 +313,10 @@ func (s *Sampler) Take(now time.Time) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	host, err := s.machine.Host()
+	if err != nil {
+		return Snapshot{}, err
+	}
 	fresh := make(map[int32]proc.Process, len(readings))
 	kept := make([]Reading, 0, len(readings))
 	for _, r := range readings {
@@ -260,14 +334,23 @@ func (s *Sampler) Take(now time.Time) (Snapshot, error) {
 		kept = append(kept, r)
 	}
 	s.facts = fresh
-	return Snapshot{At: now, Readings: kept}, nil
+	return Snapshot{At: now, Readings: kept, Host: host}, nil
 }
 
 // Facts returns what the sampler knows about the processes in its last
 // snapshot.
 func (s *Sampler) Facts() map[int32]proc.Process { return s.facts }
 
-// Ranker produces one ranking after another from a running Machine, keeping the
+// Frame is one ranking together with the machine's own figures for the same
+// window, so that what the rows account for can be compared against what the
+// machine actually did.
+type Frame struct {
+	At     time.Time
+	Rows   []Process
+	Totals Totals
+}
+
+// Ranker produces one frame after another from a running Machine, keeping the
 // previous snapshot so that every frame after the first costs a single read.
 type Ranker struct {
 	sampler  *Sampler
@@ -281,9 +364,9 @@ func NewRanker(m Machine, opt Options) *Ranker {
 }
 
 // Next takes a snapshot and ranks it against the one before it. The first call
-// has nothing to compare against and reports no rows and no error — a rate
-// needs two readings, and there is no honest answer until the second.
-func (r *Ranker) Next(now time.Time) ([]Process, error) {
+// has nothing to compare against and returns nil with no error — a rate needs
+// two readings, and there is no honest answer until the second.
+func (r *Ranker) Next(now time.Time) (*Frame, error) {
 	snap, err := r.sampler.Take(now)
 	if err != nil {
 		return nil, err
@@ -293,13 +376,42 @@ func (r *Ranker) Next(now time.Time) ([]Process, error) {
 	if !started {
 		return nil, nil
 	}
+
 	known := r.sampler.Facts()
-	rows := Rank(previous, snap, known, r.Options)
+
+	// Rank everything first, then cut to the requested rows. The attributed
+	// figure has to cover every process pcpm could see, not merely the ones on
+	// screen, or the header's arithmetic would not add up.
+	unlimited := r.Options
+	unlimited.Limit = 0
+	rows := Rank(previous, snap, known, unlimited)
+
+	var attributed float64
+	for _, p := range rows {
+		attributed += p.CPUPercent
+	}
+
 	unattended := Forgotten(known)
 	for i := range rows {
 		rows[i].Forgotten = unattended[rows[i].PID]
 	}
-	return rows, nil
+	if r.Options.Limit > 0 && len(rows) > r.Options.Limit {
+		rows = rows[:r.Options.Limit]
+	}
+
+	elapsed := snap.At.Sub(previous.At).Seconds()
+	totals := Totals{
+		Cores:             snap.Host.Cores,
+		AttributedPercent: attributed,
+		MemoryUsedBytes:   snap.Host.MemoryUsedBytes,
+		MemoryTotalBytes:  snap.Host.MemoryTotalBytes,
+		Complete:          r.Options.Owner.complete(),
+	}
+	if elapsed > 0 {
+		totals.BusyPercent = math.Max(snap.Host.BusySeconds-previous.Host.BusySeconds, 0) / elapsed * 100
+	}
+
+	return &Frame{At: snap.At, Rows: rows, Totals: totals}, nil
 }
 
 // bundleSuffix marks a macOS application bundle directory.

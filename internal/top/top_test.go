@@ -236,9 +236,12 @@ type fakeMachine struct {
 	described map[int32]int
 	fail      map[int32]bool
 	facts     map[int32]proc.Process
+	host      HostReading
 }
 
 func (m *fakeMachine) Readings() ([]Reading, error) { return m.readings, nil }
+
+func (m *fakeMachine) Host() (HostReading, error) { return m.host, nil }
 
 func (m *fakeMachine) Describe(pid int32) (proc.Process, error) {
 	if m.fail[pid] {
@@ -379,7 +382,7 @@ func TestRankerHasNothingToShowUntilItsSecondSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second) != 1 || second[0].CPUPercent != 100 {
+	if second == nil || len(second.Rows) != 1 || second.Rows[0].CPUPercent != 100 {
 		t.Errorf("second frame = %+v, want one row at 100%%", second)
 	}
 }
@@ -473,13 +476,13 @@ func TestRankerMarksForgottenRows(t *testing.T) {
 		{PID: 100, Created: epoch, CPUSeconds: 1},
 		{PID: 200, Created: epoch, CPUSeconds: 2},
 	}
-	rows, err := r.Next(epoch.Add(time.Second))
+	frame, err := r.Next(epoch.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	byPID := map[int32]Process{}
-	for _, p := range rows {
+	for _, p := range frame.Rows {
 		byPID[p.PID] = p
 	}
 	if !byPID[100].Forgotten {
@@ -487,5 +490,93 @@ func TestRankerMarksForgottenRows(t *testing.T) {
 	}
 	if byPID[200].Forgotten {
 		t.Error("pid 200 was marked but nothing is wrong with it")
+	}
+}
+
+// --- totals --------------------------------------------------------------
+
+// The rows only ever account for part of the machine, so the header has to
+// carry the whole and the part. Attribution covers every process the ranking
+// could see, not merely the ones that fit on screen — otherwise the arithmetic
+// would change with the terminal's height.
+func TestAttributionCoversEveryProcessNotJustTheRowsShown(t *testing.T) {
+	m := &fakeMachine{host: HostReading{BusySeconds: 100, Cores: 10}}
+	for i := int32(1); i <= 5; i++ {
+		m.readings = append(m.readings, Reading{PID: i, Created: epoch})
+	}
+	r := NewRanker(m, Options{Limit: 2})
+
+	if _, err := r.Next(epoch); err != nil {
+		t.Fatal(err)
+	}
+	m.readings = nil
+	for i := int32(1); i <= 5; i++ {
+		m.readings = append(m.readings, Reading{PID: i, Created: epoch, CPUSeconds: 0.1})
+	}
+	m.host = HostReading{BusySeconds: 101, Cores: 10}
+
+	frame, err := r.Next(epoch.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(frame.Rows) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(frame.Rows))
+	}
+	// five processes at 10% each, of which only two are listed
+	if frame.Totals.AttributedPercent != 50 {
+		t.Errorf("attributed = %v%%, want 50 — every visible process, not just the rows",
+			frame.Totals.AttributedPercent)
+	}
+	if frame.Totals.BusyPercent != 100 {
+		t.Errorf("busy = %v%%, want 100", frame.Totals.BusyPercent)
+	}
+	if frame.Totals.UnattributedPercent() != 50 {
+		t.Errorf("unattributed = %v%%, want 50", frame.Totals.UnattributedPercent())
+	}
+}
+
+// The host counters and the per-process counters are read microseconds apart.
+// A ranking that momentarily accounts for more than the machine did is that
+// skew, and must not surface as a negative.
+func TestUnattributedNeverGoesNegative(t *testing.T) {
+	totals := Totals{BusyPercent: 10, AttributedPercent: 25}
+
+	if got := totals.UnattributedPercent(); got != 0 {
+		t.Errorf("UnattributedPercent = %v, want 0", got)
+	}
+}
+
+func TestCapacityIsEveryCoreFlatOut(t *testing.T) {
+	if got := (Totals{Cores: 10}).Capacity(); got != 1000 {
+		t.Errorf("Capacity = %v, want 1000", got)
+	}
+}
+
+// Running as root leaves nothing out, so there is no gap to explain.
+func TestRankingEveryoneReportsItselfComplete(t *testing.T) {
+	m := &fakeMachine{
+		readings: []Reading{{PID: 1, Created: epoch}},
+		host:     HostReading{BusySeconds: 0, Cores: 4},
+	}
+	r := NewRanker(m, Options{Owner: AnyOwner()})
+	if _, err := r.Next(epoch); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := r.Next(epoch.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !frame.Totals.Complete {
+		t.Error("a ranking of everyone should report itself complete")
+	}
+
+	r2 := NewRanker(m, Options{Owner: OwnedBy(501)})
+	if _, err := r2.Next(epoch); err != nil {
+		t.Fatal(err)
+	}
+	frame2, _ := r2.Next(epoch.Add(time.Second))
+	if frame2.Totals.Complete {
+		t.Error("a ranking restricted to one user is not complete")
 	}
 }

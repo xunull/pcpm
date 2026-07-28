@@ -64,7 +64,7 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid interval %s: a rate needs time to pass", interval)
 	}
 
-	ranked, err := rankOnce(top.Host{}, interval, top.Options{
+	frame, err := rankOnce(top.Host{}, interval, top.Options{
 		Sort:  sortKey,
 		Owner: rankingOwner(),
 		Limit: rows,
@@ -76,32 +76,37 @@ func runTop(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	switch format {
 	case render.FormatJSON:
-		body, err := render.TopJSON(ranked)
+		body, err := render.TopJSON(frame.Rows, frame.Totals)
 		if err != nil {
 			return fmt.Errorf("rendering json: %w", err)
 		}
 		fmt.Fprint(out, body)
 	case render.FormatTable:
 		home, _ := os.UserHomeDir()
-		fmt.Fprint(out, render.TopTable(ranked, home, terminalWidth(out)))
+		fmt.Fprint(out, render.TopHeader(frame.Totals))
+		fmt.Fprintln(out)
+		fmt.Fprint(out, render.TopTable(frame.Rows, home, terminalWidth(out)))
 	default:
 		return fmt.Errorf("unhandled output format %v", format)
 	}
 	return nil
 }
 
-// rankOnce measures for interval and returns one ranking.
-func rankOnce(m top.Machine, interval time.Duration, opt top.Options) ([]top.Process, error) {
+// rankOnce measures for interval and returns one frame.
+func rankOnce(m top.Machine, interval time.Duration, opt top.Options) (*top.Frame, error) {
 	r := top.NewRanker(m, opt)
 	if _, err := r.Next(time.Now()); err != nil {
 		return nil, fmt.Errorf("reading processes: %w", err)
 	}
 	time.Sleep(interval)
-	ranked, err := r.Next(time.Now())
+	frame, err := r.Next(time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("reading processes: %w", err)
 	}
-	return ranked, nil
+	if frame == nil {
+		return nil, fmt.Errorf("no measurement after %s", interval)
+	}
+	return frame, nil
 }
 
 // rankingOwner restricts the ranking to the invoking user unless pcpm is

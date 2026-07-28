@@ -2,10 +2,34 @@ package render
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/xunull/pcpm/internal/top"
 )
+
+// TopHeader states what the machine was doing over the same window the rows
+// cover, and how much of it the rows account for.
+//
+// Without it a reader has no way to tell whether the ranking covers everything
+// or two thirds of it. The machine's own totals need no privilege, so the gap
+// can be given as a quantity instead of left as an absence — and named, so that
+// a reader who sees it grow knows what to do about it (ADR-0011).
+func TopHeader(t top.Totals) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CPU  %s%% of %s%% (%d cores)  ·  attributed %s%%",
+		formatPercent(t.BusyPercent), formatPercent(t.Capacity()), t.Cores,
+		formatPercent(t.AttributedPercent))
+	if !t.Complete {
+		fmt.Fprintf(&b, "  ·  unattributed %s%% (needs sudo)",
+			formatPercent(t.UnattributedPercent()))
+	}
+	b.WriteByte('\n')
+	if t.MemoryTotalBytes > 0 {
+		fmt.Fprintf(&b, "MEM  %s / %s\n", Bytes(t.MemoryUsedBytes), Bytes(t.MemoryTotalBytes))
+	}
+	return b.String()
+}
 
 // forgottenMark flags a row whose process belongs to a tree nothing is looking
 // after any more.
@@ -105,9 +129,46 @@ type jsonTop struct {
 	Forgotten   bool    `json:"forgotten"`
 }
 
-// TopJSON renders a ranking as an indented JSON array with nothing truncated.
-// An empty ranking renders "[]" (never "null").
-func TopJSON(rows []top.Process) (string, error) {
+// jsonTopFrame is the machine-readable view of a whole ranking. Unlike the
+// other commands this is an object rather than an array: the machine's own
+// figures belong with the rows they are to be compared against, and the table
+// puts them in a header for the same reason.
+type jsonTopFrame struct {
+	CPU       jsonTopCPU    `json:"cpu"`
+	Memory    jsonTopMemory `json:"memory"`
+	Processes []jsonTop     `json:"processes"`
+}
+
+type jsonTopCPU struct {
+	Cores             int     `json:"cores"`
+	BusyPercent       float64 `json:"busy_percent"`
+	CapacityPercent   float64 `json:"capacity_percent"`
+	AttributedPercent float64 `json:"attributed_percent"`
+	// Unattributed is busy CPU no listed process accounts for. It is zero when
+	// complete is true.
+	UnattributedPercent float64 `json:"unattributed_percent"`
+	Complete            bool    `json:"complete"`
+}
+
+type jsonTopMemory struct {
+	UsedBytes  int64 `json:"used_bytes"`
+	TotalBytes int64 `json:"total_bytes"`
+}
+
+// TopJSON renders a ranking, and the machine figures beside it, as an indented
+// JSON object with nothing truncated. No processes renders "[]" (never "null").
+func TopJSON(rows []top.Process, t top.Totals) (string, error) {
+	frame := jsonTopFrame{
+		CPU: jsonTopCPU{
+			Cores:               t.Cores,
+			BusyPercent:         t.BusyPercent,
+			CapacityPercent:     t.Capacity(),
+			AttributedPercent:   t.AttributedPercent,
+			UnattributedPercent: t.UnattributedPercent(),
+			Complete:            t.Complete,
+		},
+		Memory: jsonTopMemory{UsedBytes: t.MemoryUsedBytes, TotalBytes: t.MemoryTotalBytes},
+	}
 	views := make([]jsonTop, len(rows))
 	for i, p := range rows {
 		v := jsonTop{
@@ -129,5 +190,6 @@ func TopJSON(rows []top.Process) (string, error) {
 		}
 		views[i] = v
 	}
-	return encodeJSON(views)
+	frame.Processes = views
+	return encodeJSON(frame)
 }

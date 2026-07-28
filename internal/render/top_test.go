@@ -139,19 +139,33 @@ func TestTopTableSaysWhenThereIsNothingToRank(t *testing.T) {
 // The table has no room for a command line, so JSON is where it has to survive
 // intact — that is the point of having both.
 func TestTopJSONKeepsTheWholeCommandLine(t *testing.T) {
-	body, err := TopJSON(ranked())
+	body, err := TopJSON(ranked(), top.Totals{Cores: 10, BusyPercent: 900, AttributedPercent: 825})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []struct {
-		PID        int32   `json:"pid"`
-		Cmdline    string  `json:"cmdline"`
-		CPUPercent float64 `json:"cpu_percent"`
-		RSSBytes   int64   `json:"rss_bytes"`
-		CreateTime string  `json:"create_time"`
+	var frame struct {
+		CPU struct {
+			Cores               int     `json:"cores"`
+			BusyPercent         float64 `json:"busy_percent"`
+			UnattributedPercent float64 `json:"unattributed_percent"`
+		} `json:"cpu"`
+		Processes []struct {
+			PID        int32   `json:"pid"`
+			Cmdline    string  `json:"cmdline"`
+			CPUPercent float64 `json:"cpu_percent"`
+			RSSBytes   int64   `json:"rss_bytes"`
+			CreateTime string  `json:"create_time"`
+		} `json:"processes"`
 	}
-	if err := json.Unmarshal([]byte(body), &got); err != nil {
+	if err := json.Unmarshal([]byte(body), &frame); err != nil {
 		t.Fatalf("not valid JSON: %v\n%s", err, body)
+	}
+	got := frame.Processes
+	if frame.CPU.Cores != 10 || frame.CPU.BusyPercent != 900 {
+		t.Errorf("the machine figures are missing from the JSON: %+v", frame.CPU)
+	}
+	if frame.CPU.UnattributedPercent != 75 {
+		t.Errorf("unattributed = %v, want 75", frame.CPU.UnattributedPercent)
 	}
 	if len(got) != 3 {
 		t.Fatalf("want 3 entries, got %d", len(got))
@@ -171,11 +185,39 @@ func TestTopJSONKeepsTheWholeCommandLine(t *testing.T) {
 }
 
 func TestTopJSONRendersNothingAsAnEmptyArray(t *testing.T) {
-	body, err := TopJSON(nil)
+	body, err := TopJSON(nil, top.Totals{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(body) != "[]" {
-		t.Errorf("TopJSON(nil) = %q, want []", body)
+	if !strings.Contains(body, `"processes": []`) {
+		t.Errorf("TopJSON with no processes should carry an empty array, got:\n%s", body)
+	}
+}
+
+// A reader has to be able to tell whether the rows cover the machine or two
+// thirds of it, and what to do about the difference.
+func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
+	out := TopHeader(top.Totals{
+		Cores: 10, BusyPercent: 699, AttributedPercent: 551,
+		MemoryUsedBytes: 52 << 30, MemoryTotalBytes: 64 << 30,
+	})
+
+	for _, want := range []string{"699%", "1000%", "10 cores", "551%", "148%", "sudo"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("header is missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "52 GB") || !strings.Contains(out, "64 GB") {
+		t.Errorf("header is missing the memory figures:\n%s", out)
+	}
+}
+
+// Running as root leaves no gap, so there is nothing to disclose and no remedy
+// to suggest.
+func TestTopHeaderSaysNothingAboutSudoWhenItCoversEverything(t *testing.T) {
+	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, AttributedPercent: 690, Complete: true})
+
+	if strings.Contains(out, "sudo") || strings.Contains(out, "unattributed") {
+		t.Errorf("a complete ranking should not mention a gap:\n%s", out)
 	}
 }
