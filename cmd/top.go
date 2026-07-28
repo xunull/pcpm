@@ -82,7 +82,8 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Fprint(out, body)
 	case render.FormatTable:
-		fmt.Fprint(out, render.TopTable(ranked, terminalWidth(out)))
+		home, _ := os.UserHomeDir()
+		fmt.Fprint(out, render.TopTable(ranked, home, terminalWidth(out)))
 	default:
 		return fmt.Errorf("unhandled output format %v", format)
 	}

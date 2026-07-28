@@ -11,10 +11,12 @@ package top
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
 
+	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/proc"
 )
 
@@ -44,6 +46,10 @@ type Process struct {
 	// loop — as 10% on a ten-core machine.
 	CPUPercent float64
 	RSSBytes   int64
+	// Forgotten marks a process belonging to a tree whose launching job is
+	// gone. It is what a ranking can say that `top` cannot: not merely what is
+	// busy, but which of it is busy for no reason anyone still remembers.
+	Forgotten bool
 }
 
 // SortKey is what a ranking is ordered by.
@@ -287,5 +293,65 @@ func (r *Ranker) Next(now time.Time) ([]Process, error) {
 	if !started {
 		return nil, nil
 	}
-	return Rank(previous, snap, r.sampler.Facts(), r.Options), nil
+	known := r.sampler.Facts()
+	rows := Rank(previous, snap, known, r.Options)
+	unattended := Forgotten(known)
+	for i := range rows {
+		rows[i].Forgotten = unattended[rows[i].PID]
+	}
+	return rows, nil
+}
+
+// bundleSuffix marks a macOS application bundle directory.
+const bundleSuffix = ".app"
+
+// Application returns the macOS application an executable belongs to, or "" for
+// one that belongs to none.
+//
+// It is the *first* .app component of the path, not the last. Bundles nest —
+// `Chrome.app/…/Chrome Helper (Renderer).app/…` — and taking the last one would
+// group nothing, because every helper is its own bundle.
+//
+// A process outside any bundle has no application, rather than inheriting one
+// from whatever launched it. Walking up the parent chain instead would label
+// `claude` as `Warp` and every command as its terminal, which points at the
+// wrong thing with more confidence than saying nothing.
+//
+// On Linux nothing matches, and the column that shows this disappears of its
+// own accord.
+func Application(exe string) string {
+	segments := strings.Split(exe, "/")
+	// The last segment is the executable itself. A bundle is a directory that
+	// contains one, so a path ending at a .app groups nothing.
+	for _, s := range segments[:max(len(segments)-1, 0)] {
+		if name, ok := strings.CutSuffix(s, bundleSuffix); ok && name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// Application returns the macOS application this process belongs to, or "".
+func (p Process) Application() string { return Application(p.Exe) }
+
+// Forgotten returns the PIDs belonging to a Forgotten Process Tree — a tree
+// whose launching job is gone, as `pcpm forgotten` defines it.
+//
+// Every member is included, not only the root. The process actually burning the
+// CPU is frequently a child, and marking roots alone would leave the row a
+// reader is looking at unmarked while flagging one further down the list.
+func Forgotten(known map[int32]proc.Process) map[int32]bool {
+	all := make([]proc.Process, 0, len(known))
+	for _, p := range known {
+		all = append(all, p)
+	}
+	ix := proc.NewIndex(all)
+
+	marked := map[int32]bool{}
+	for _, tree := range forgotten.Detect(all, nil) {
+		for _, pid := range ix.TreeMembers(tree.Root.PID) {
+			marked[pid] = true
+		}
+	}
+	return marked
 }

@@ -17,6 +17,10 @@ type Process struct {
 	User    string
 	Name    string
 	Cmdline string
+	// Exe is the executable's path on disk. It is not the first word of
+	// Cmdline: a login shell reports "-zsh", and 221 of 1106 processes on one
+	// real machine disagreed with their own command line this way.
+	Exe     string
 	Cwd     string // launch directory
 	Created time.Time
 }

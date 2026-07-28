@@ -61,6 +61,7 @@ func describe(p *process.Process) (Process, error) {
 	name, _ := p.Name()
 	cmdline, _ := p.Cmdline()
 	cwd, _ := p.Cwd()
+	exe, _ := p.Exe()
 
 	var created time.Time
 	if ms, err := p.CreateTime(); err == nil && ms > 0 {
@@ -75,6 +76,7 @@ func describe(p *process.Process) (Process, error) {
 		User:    user,
 		Name:    name,
 		Cmdline: cmdline,
+		Exe:     exe,
 		Cwd:     cwd,
 		Created: created,
 	}, nil

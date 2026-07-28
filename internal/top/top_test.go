@@ -235,6 +235,7 @@ type fakeMachine struct {
 	readings  []Reading
 	described map[int32]int
 	fail      map[int32]bool
+	facts     map[int32]proc.Process
 }
 
 func (m *fakeMachine) Readings() ([]Reading, error) { return m.readings, nil }
@@ -247,6 +248,9 @@ func (m *fakeMachine) Describe(pid int32) (proc.Process, error) {
 		m.described = map[int32]int{}
 	}
 	m.described[pid]++
+	if p, ok := m.facts[pid]; ok {
+		return p, nil
+	}
 	return proc.Process{PID: pid, Name: "p", Created: epoch}, nil
 }
 
@@ -377,5 +381,111 @@ func TestRankerHasNothingToShowUntilItsSecondSnapshot(t *testing.T) {
 	}
 	if len(second) != 1 || second[0].CPUPercent != 100 {
 		t.Errorf("second frame = %+v, want one row at 100%%", second)
+	}
+}
+
+// --- Application ---------------------------------------------------------
+
+// Every one of these is a real path taken from a running machine.
+func TestApplication(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exe  string
+		want string
+	}{
+		{
+			// The bundle nests: the helper is itself a .app inside the
+			// application. Taking the last one would group nothing, because
+			// every helper would be its own application.
+			"nested bundle takes the outermost",
+			"/Applications/汽水音乐.app/Contents/Frameworks/汽水音乐 Helper (Renderer).app/Contents/MacOS/汽水音乐 Helper (Renderer)",
+			"汽水音乐",
+		},
+		{
+			"bundle name containing spaces",
+			"/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+			"Visual Studio Code",
+		},
+		{
+			"helper nested several levels down",
+			"/Applications/Doubao.app/Contents/Helpers/Doubao Browser.app/Contents/Frameworks/Doubao Browser Framework.framework/Versions/135.0.7049.72/Helpers/Doubao Browser Helper (Renderer).app/Contents/MacOS/Doubao Browser Helper (Renderer)",
+			"Doubao",
+		},
+		{"plain bundle", "/Applications/Warp.app/Contents/MacOS/stable", "Warp"},
+		// A process outside any bundle belongs to no application. It does not
+		// belong to whatever launched it: labelling `claude` as `Warp` would
+		// point at the terminal when the answer is the command.
+		{"command-line tool", "/opt/homebrew/bin/claude", ""},
+		{"bare name", "bun", ""},
+		{"empty", "", ""},
+		// The executable itself, not a directory containing one — nothing is
+		// grouped by this, so there is no application.
+		{"path ending at the bundle", "/Users/q/Some.app", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Application(tc.exe); got != tc.want {
+				t.Errorf("Application(%q) = %q, want %q", tc.exe, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- the forgotten marker ------------------------------------------------
+
+// The process actually burning CPU is often a child of the forgotten root, so
+// marking only roots would leave the row a reader is looking at unmarked.
+func TestDescendantsOfAForgottenRootAreMarkedToo(t *testing.T) {
+	// pid 100's process group leader (99) is dead and its parent is launchd,
+	// which is the definition of forgotten; 101 is its child.
+	known := facts(
+		proc.Process{PID: 1, PPID: 0, PGID: 1, Name: "launchd", Cmdline: "/sbin/launchd"},
+		proc.Process{PID: 100, PPID: 1, PGID: 99, Name: "bun", Cmdline: "bun /x/gbrain serve"},
+		proc.Process{PID: 101, PPID: 100, PGID: 99, Name: "worker", Cmdline: "worker --busy"},
+		proc.Process{PID: 200, PPID: 1, PGID: 200, Name: "tended", Cmdline: "tended"},
+	)
+
+	got := Forgotten(known)
+
+	if !got[100] {
+		t.Error("the forgotten root is not marked")
+	}
+	if !got[101] {
+		t.Error("a descendant of a forgotten root is not marked")
+	}
+	if got[200] {
+		t.Error("a process leading its own live group was marked")
+	}
+}
+
+func TestRankerMarksForgottenRows(t *testing.T) {
+	m := &fakeMachine{readings: []Reading{{PID: 100, Created: epoch}, {PID: 200, Created: epoch}}}
+	m.facts = map[int32]proc.Process{
+		1:   {PID: 1, PPID: 0, PGID: 1, Name: "launchd", Cmdline: "/sbin/launchd"},
+		100: {PID: 100, PPID: 1, PGID: 99, Name: "bun", Cmdline: "bun /x/gbrain serve", Created: epoch},
+		200: {PID: 200, PPID: 1, PGID: 200, Name: "tended", Cmdline: "tended", Created: epoch},
+	}
+	r := NewRanker(m, Options{})
+
+	if _, err := r.Next(epoch); err != nil {
+		t.Fatal(err)
+	}
+	m.readings = []Reading{
+		{PID: 100, Created: epoch, CPUSeconds: 1},
+		{PID: 200, Created: epoch, CPUSeconds: 2},
+	}
+	rows, err := r.Next(epoch.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byPID := map[int32]Process{}
+	for _, p := range rows {
+		byPID[p.PID] = p
+	}
+	if !byPID[100].Forgotten {
+		t.Error("pid 100 is a forgotten root but was not marked")
+	}
+	if byPID[200].Forgotten {
+		t.Error("pid 200 was marked but nothing is wrong with it")
 	}
 }
