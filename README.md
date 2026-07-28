@@ -10,6 +10,7 @@ Three tools, all read-only:
 | --- | --- |
 | [`pcpm forgotten`](#pcpm-forgotten) | Find the processes nothing is looking after any more — the dev server an AI coding agent started for debugging, then left running for days after it exited. |
 | [`pcpm ports`](#pcpm-ports) | See which of your processes hold a listening TCP port. |
+| [`pcpm top`](#pcpm-top) | Rank what is consuming CPU right now — and mark the rows nothing is looking after. |
 | [`pcpm watch`](#pcpm-watch) | Record what a process and its tree consume over time, and read it back — including after the process has exited. |
 
 ---
@@ -18,6 +19,7 @@ Three tools, all read-only:
 
 - [`pcpm forgotten`](#pcpm-forgotten) — and [why it is accurate](#why-forgotten-is-accurate)
 - [`pcpm ports`](#pcpm-ports)
+- [`pcpm top`](#pcpm-top) — and [what it cannot see](#what-top-cannot-see)
 - [`pcpm watch`](#pcpm-watch)
 - [Install](#install)
 - [Configuration](#configuration)
@@ -110,6 +112,78 @@ pcpm ports -o json
 ```
 
 A port marked `*` is bound to all interfaces, so it is reachable from off this machine.
+
+## `pcpm top`
+
+What is consuming CPU at this moment, busiest first.
+
+```console
+$ pcpm top -n 6
+CPU  193% of 1000% (10 cores)  ·  attributed 170%  ·  unattributed 22.8% (needs sudo)
+MEM  49 GB / 64 GB
+
+%CPU     RSS    PID  NAME                           APP     DIR
+15.9  217 MB  56394  stable                         Warp    ~
+13.5  615 MB  61742  claude                                 …/open-source/pcpm
+11.2  217 MB  62625  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
+10.0  300 MB  34442  Kimi Helper (Renderer)         Kimi    /
+ 8.1   23 MB  61398  pcpm-r                                 …/open-source/pcpm
+ 7.9   28 MB  25922  pcpm                                   …/open-source/pcpm
+```
+
+In a terminal it redraws every interval until you press `q`. Piped or redirected it prints one frame and exits, so `pcpm top | head` and `pcpm top -o json > f.json` need no flag; `--once` forces one frame in a terminal too.
+
+```
+q quit    [c cpu]  m memory    every 1s
+```
+
+**It takes a second to answer, and that is not a bug.** The kernel keeps no CPU percentage — only a counter of CPU seconds consumed since each process started. A rate exists only as a difference, so pcpm reads every process twice and reports what changed. Anything that answers instantly is reporting a *lifetime average* instead: `ps aux`'s `%CPU` is cumulative CPU divided by process age, which reported 14.5% for a process actually using 26.5%.
+
+**Percentages are per core.** 100% is one core fully occupied; a process spread over eight cores reads 800%, and the header's `of 1000%` is this ten-core machine flat out. Dividing by the core count instead would render the most common failure there is — one thread stuck in a loop — as a reassuring 10%.
+
+### What makes it different from `top`
+
+`/usr/bin/top` is setuid root and can see more of this machine than pcpm ever will. So `pcpm top` answers a question `top` structurally cannot: **which of this is running for no reason anyone still remembers?**
+
+```console
+$ pcpm top -n 400
+   %CPU     RSS    PID  NAME    APP   DIR
+!   0.0   21 MB  75403  bun           …/kapa-wiki/xiaochengxu-insight-wiki
+!   0.0   34 MB  35722  bun           …/xunull-thinking/diandian
+!   0.0   34 MB  81142  bun           …/open-source/cuwatch
+
+! nothing is looking after this — see `pcpm forgotten`
+```
+
+The marker uses the same rule as [`pcpm forgotten`](#pcpm-forgotten), and lands on **every member** of such a tree rather than only its root — the process actually burning the CPU is frequently a child.
+
+### Columns
+
+| Column | |
+| --- | --- |
+| `!` | This process belongs to a Forgotten Process Tree. Absent when nothing is. |
+| `%CPU` | Per core, over the last interval. May exceed 100%. |
+| `RSS` | Resident memory, as an absolute figure rather than a percentage of a 64 GB machine. |
+| `NAME` | The executable's name. |
+| `APP` | The macOS application the process belongs to — the outermost `.app` in its path. One application holds many processes. Absent on Linux, and for anything outside a bundle. |
+| `DIR` | The Launch Directory. This is what tells four identically-named processes apart: on this machine two `claude` processes had *identical* command lines and four different repositories. |
+
+`-o json` carries all of it untruncated, including the full command line the table has no room for, plus the header's figures under `cpu` and `memory`.
+
+### What `top` cannot see
+
+**Roughly 70–85% of the machine's busy CPU, on this machine.** Measured over six two-second windows: 84.0, 86.0, 82.4, 69.9, 82.3, 84.7 percent.
+
+The rest is unattributed, and the header says so rather than quietly rounding it into the rows. Two reasons for it:
+
+- **Another user's process reports zero, not an error.** On macOS `proc_pidinfo` gives real figures only to root or to the same UID. All 205 of the other users' processes on this machine returned CPU 0 and RSS 0 with no error at all. `ps` and `top` escape this because Apple ships them setuid root (`4755` and `4555`); a Go binary from Homebrew is not.
+- **`kernel_task` cannot be read at all.** It is PID 0, which gopsutil refuses outright — even as root.
+
+Rather than rank processes whose figures are known to be zero, and so sort the machine's genuinely busiest to the bottom of a list whose entire purpose is the ordering, pcpm ranks only what it can measure and states the gap. `sudo pcpm top` covers everything but `kernel_task` — which is why the unattributed figure is still shown under `sudo`, just without the suggestion. It does not fall to zero, and pretending it would is the one thing the header must not do. The reasoning is in [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md).
+
+### `top` and `watch` are not the same tool
+
+`pcpm top` answers *what is busy now* and forgets. [`pcpm watch`](#pcpm-watch) answers *what has this been doing* and remembers. Neither is a smaller version of the other.
 
 ## `pcpm watch`
 
@@ -229,6 +303,11 @@ watch:
   rollup_interval: 1m       # the summarised bucket size
   raw_retention: 48h        # how long full-resolution samples are kept
   rollup_retention: 720h    # how long summaries are kept (30 days)
+
+top:
+  interval: 1s              # both the refresh period and the window each figure averages
+  number: 0                 # 0 = fill the terminal; any other value is an explicit count
+  sort: cpu                 # cpu | mem
 ```
 
 | Key | Raising it | Lowering it |
@@ -236,6 +315,7 @@ watch:
 | `sample_interval` | Less storage, coarser charts | Finer charts, proportionally more storage. Measuring a ten-process tree costs ~106µs, so CPU is not the constraint |
 | `discover_interval` | Cheaper; a process that lives and dies between two passes is never seen | Catches shorter-lived children. Each pass walks the whole process table, ~27ms |
 | `raw_retention` | Longer to drill into individual processes | Smaller database; the rollups still cover the period |
+| `top.interval` | A steadier ordering, and a longer wait before `--once` answers | Notices a change sooner, at the cost of a noisier ranking. It is one setting because the refresh period *is* the averaging window |
 
 Resolution order is `flag > PCPM_* environment variable > config file > built-in default`. `--ignore` **adds to** the configured list rather than replacing it.
 
@@ -246,6 +326,8 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
 - **PID reuse can hide a `forgotten` finding.** `PGID` is itself a PID value, so if the dead leader's number is recycled by an unrelated new process, that finding is missed. This under-reports; it never produces a false positive. `watch` is unaffected — a target is pinned by its start time as well as its PID.
 - **`watch` misses very short-lived children.** A process that starts and exits between two discovery passes is never sampled. Lower `discover_interval` if that matters.
 - **`watch` does not record network traffic yet** — only CPU and memory. Per-process network bytes have no portable source: macOS can supply them through `nettop`, Linux has no unprivileged equivalent.
+- **`top` sees roughly 70–85% of busy CPU without `sudo`,** and never `kernel_task`. Other users' processes report zero rather than erroring, so they are excluded rather than ranked at zero; the header states the size of the gap. See [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md).
+- **`top`'s `APP` column is macOS-only.** It comes from the `.app` bundle in the executable's path, which has no Linux equivalent; the column is simply absent there.
 - **Linux and macOS only.** Windows has no process groups; containers have their own PID namespace, so run pcpm on the host.
 
 ## Further reading
@@ -256,6 +338,7 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
   - [ADR-0007](docs/adr/0007-metrics-in-sqlite-not-a-tsdb.md) — why metrics live in SQLite rather than a time-series database
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) — why samples store cumulative CPU rather than a percentage
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) — why the collector is one daemon controlled through the database
+  - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) — why `top` ranks only what it can actually measure
 - [`CONTEXT.md`](CONTEXT.md) — the project's glossary
 
 ## License

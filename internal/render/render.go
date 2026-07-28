@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/xunull/pcpm/internal/forgotten"
 	"github.com/xunull/pcpm/internal/listen"
@@ -77,7 +76,7 @@ func ShortPath(path, home string, maxLen int) string {
 			path = "~" + strings.TrimPrefix(path, home)
 		}
 	}
-	if len(path) <= maxLen {
+	if displayWidth(path) <= maxLen {
 		return path
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
@@ -191,15 +190,22 @@ func ListenersJSON(ls []listen.Listener) (string, error) {
 // column but the last is padded to its widest cell; the last column is
 // truncated so each line fits within width (width <= 0 disables truncation).
 // A row may have fewer cells than there are headers; missing cells render empty.
-func Grid(header []string, rows [][]string, width int) string {
+//
+// align gives each column's alignment and may be nil or short, in which case
+// the columns it does not reach are left-aligned.
+//
+// All of the measuring here is in terminal columns rather than bytes or runes,
+// because that is the only one of the three that says where the next column
+// will start (see displayWidth).
+func Grid(header []string, align []Align, rows [][]string, width int) string {
 	cols := len(header)
 	w := make([]int, cols)
 	for i, h := range header {
-		w[i] = len(h)
+		w[i] = displayWidth(h)
 	}
 	for _, r := range rows {
 		for i := 0; i < cols-1 && i < len(r); i++ { // last column is never padded
-			w[i] = max(w[i], len(r[i]))
+			w[i] = max(w[i], displayWidth(r[i]))
 		}
 	}
 	at := func(r []string, i int) string {
@@ -208,16 +214,25 @@ func Grid(header []string, rows [][]string, width int) string {
 		}
 		return ""
 	}
+	alignOf := func(i int) Align {
+		if i < len(align) {
+			return align[i]
+		}
+		return Left
+	}
 
 	var b strings.Builder
 	writeRow := func(r []string, isHeader bool) {
 		var prefix strings.Builder
+		used := 0
 		for i := 0; i < cols-1; i++ {
-			fmt.Fprintf(&prefix, "%-*s  ", w[i], at(r, i))
+			prefix.WriteString(padTo(at(r, i), w[i], alignOf(i)))
+			prefix.WriteString("  ")
+			used += w[i] + 2
 		}
 		last := at(r, cols-1)
 		if width > 0 {
-			room := max(0, width-prefix.Len())
+			room := max(0, width-used)
 			if isHeader {
 				// A header is a fixed label, not free-form text: eliding its
 				// middle turns COMMAND into "C…AND", which reads as neither.
@@ -273,7 +288,7 @@ func ForgottenTable(trees []forgotten.Tree, now time.Time, home string, width in
 			t.Root.Cmdline,
 		}
 	}
-	return Grid([]string{"PID", "PGID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, rows, width)
+	return Grid([]string{"PID", "PGID", "AGE", "PORTS", "PROCS", "DIR", "COMMAND"}, nil, rows, width)
 }
 
 // Bytes renders a byte count the way a person reads memory: three significant
@@ -295,13 +310,26 @@ func Bytes(n int64) string {
 	return fmt.Sprintf("%.0f %s", value, suffix)
 }
 
-// Percent renders a CPU figure. Values are unbounded above 100 — a tree can use
-// more than one core — so the width is not fixed.
-func Percent(p float64) string {
-	if p < 10 {
-		return fmt.Sprintf("%.1f%%", p)
+// Percent renders a CPU figure with its unit. Values are unbounded above 100 —
+// a tree can use more than one core — so the width is not fixed.
+func Percent(p float64) string { return percentTo(p, 10) + "%" }
+
+// rankedPercent renders a CPU figure for a column whose heading already carries
+// the unit, keeping a decimal place up to 100 rather than up to 10.
+//
+// A ranking has to justify its own ordering: two rows at 12.8 and 12.3 both
+// printed as "13" make the one above look arbitrarily placed. A summary of a
+// single target has nothing to compare itself against and does not need the
+// digit, which is why the two differ — and why they share the mechanism, so the
+// difference stays a decision rather than a drift.
+func rankedPercent(p float64) string { return percentTo(p, 100) }
+
+// percentTo prints one decimal below cutoff and none at or above it.
+func percentTo(p, cutoff float64) string {
+	if p < cutoff {
+		return fmt.Sprintf("%.1f", p)
 	}
-	return fmt.Sprintf("%.0f%%", p)
+	return fmt.Sprintf("%.0f", p)
 }
 
 // WatchSummaryText renders a Watch Target's history as a short human report:
@@ -337,7 +365,7 @@ func WatchSummaryText(s watch.Status, sum watch.Summary, window time.Duration, n
 			Bytes(p.RSSBytes),
 		}
 	}
-	b.WriteString(Grid([]string{"PID", "NAME", "CPU", "RSS"}, rows, width))
+	b.WriteString(Grid([]string{"PID", "NAME", "CPU", "RSS"}, nil, rows, width))
 	return b.String()
 }
 
@@ -426,7 +454,7 @@ func WatchTargetsTable(statuses []watch.Status, now time.Time, home string, widt
 			s.Cmdline,
 		}
 	}
-	return Grid([]string{"PID", "WATCHING", "PROCESS", "ADDED", "DIR", "COMMAND"}, rows, width)
+	return Grid([]string{"PID", "WATCHING", "PROCESS", "ADDED", "DIR", "COMMAND"}, nil, rows, width)
 }
 
 // DaemonLine reports the collector's state as a single line beneath the target
@@ -525,7 +553,7 @@ func ListenersTable(ls []listen.Listener, now time.Time, width int) string {
 			l.Cmdline,
 		}
 	}
-	return Grid([]string{"PID", "PORTS", "AGE", "NAME", "COMMAND"}, rows, width)
+	return Grid([]string{"PID", "PORTS", "AGE", "NAME", "COMMAND"}, nil, rows, width)
 }
 
 // formatPorts joins a listener's ports as e.g. "3000,5000*", marking each
@@ -565,11 +593,11 @@ func fit(s string, width int) string {
 // own information is. That alone usually brings the line inside the width; when
 // it does not, the middle is elided rather than the end.
 func fitCommand(s string, width int) string {
-	if width <= 0 || len([]rune(s)) <= width {
+	if width <= 0 || displayWidth(s) <= width {
 		return s
 	}
 	collapsed := collapsePaths(s)
-	if len([]rune(collapsed)) <= width {
+	if displayWidth(collapsed) <= width {
 		return collapsed
 	}
 	// Below this there is not enough room for two meaningful ends, and an
@@ -601,36 +629,12 @@ func collapsePaths(s string) string {
 // twice the room of the head: arguments say more about what a process is doing
 // than the interpreter that launched it does.
 func elideMiddle(s string, width int) string {
-	runes := []rune(s)
 	if width <= 1 {
 		return ellipsis
 	}
 	keep := width - 1 // room for the ellipsis
 	head := keep / 3
-	tail := keep - head
-	return string(runes[:head]) + ellipsis + string(runes[len(runes)-tail:])
+	return headColumns(s, head) + ellipsis + tailColumns(s, keep-head)
 }
 
-// truncate shortens s to at most n bytes, marking any cut with a trailing
-// ellipsis. It never cuts in the middle of a UTF-8 rune.
-func truncate(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if len(s) <= n {
-		return s
-	}
-	// Reserve room for the ellipsis when it fits, then back the cut up to the
-	// nearest rune boundary so we never emit an invalid UTF-8 fragment.
-	cut := n
-	if n > len(ellipsis) {
-		cut = n - len(ellipsis)
-	}
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	if n > len(ellipsis) {
-		return s[:cut] + ellipsis
-	}
-	return s[:cut]
-}
+// truncate lives in width.go, where everything measured in terminal columns is.

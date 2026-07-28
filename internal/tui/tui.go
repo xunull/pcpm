@@ -340,7 +340,7 @@ func (m Model) processes() string {
 			render.Bytes(p.RSSBytes),
 		}
 	}
-	out := render.Grid([]string{" ", "PID", "NAME", "CPU", "RSS"}, rows, m.width)
+	out := render.Grid([]string{" ", "PID", "NAME", "CPU", "RSS"}, nil, rows, m.width)
 	if hidden := len(m.summary.Processes) - limit; hidden > 0 {
 		out += fmt.Sprintf("… and %d more\n", hidden)
 	}
