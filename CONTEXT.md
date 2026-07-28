@@ -7,7 +7,7 @@ pcpm (PC Process Manage) is a CLI toolbox for making sense of the processes on y
 ### Shared vocabulary
 
 **Process Tree**:
-A process together with its descendants. pcpm reasons about trees rather than lone processes, because the command a person recognises is often only a wrapper around the process actually doing the work.
+A process together with its descendants. pcpm reasons about trees rather than lone processes, because the command a person recognises is often only a wrapper around the process actually doing the work. The exception is ranking what is busy: "which process is consuming this right now" is a question about one process, and a tree cannot answer it.
 
 **Launch Directory**:
 The working directory a process was started in. Reported because it is the strongest cue for recognising what a process belongs to (e.g. the project you were debugging last week).
@@ -35,3 +35,13 @@ _Avoid_: monitor, subscription, job
 **Sample**:
 One measurement of one process at one instant — never of a whole tree. Figures for a tree are always derived from the samples beneath it, so that "which process was responsible" stays answerable after the fact.
 _Avoid_: data point, metric, reading, snapshot
+
+## Ranking what is busy
+
+**Unattributed CPU**:
+Busy CPU time that could not be assigned to any process pcpm was able to read. It exists because another user's process reports zero rather than an error, and because the kernel task cannot be read at all; the machine's own totals, by contrast, need no privilege. Reported as a quantity beside the ranking rather than left as an absence, so that a reader can tell whether the rows account for the machine or only part of it.
+_Avoid_: system CPU, kernel CPU, other CPU, overhead
+
+**Application**:
+The macOS bundle a process belongs to, taken as the outermost `.app` in its executable path. One application holds many processes — renderers, GPU helpers — and grouping them is the only way a reader recognises what they are looking at. A process outside any bundle belongs to no application; it does not belong to whatever launched it, because naming the terminal that started a command points at the wrong thing.
+_Avoid_: app bundle, program, package, parent app

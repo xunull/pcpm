@@ -7,22 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/xunull/pcpm/internal/config"
 	"github.com/xunull/pcpm/internal/render"
 	"github.com/xunull/pcpm/internal/top"
 	"github.com/xunull/pcpm/internal/tui"
 )
-
-// DefaultInterval is how long the ranking watches before reporting.
-//
-// It is both the sampling window and, later, the refresh period: a rate is the
-// difference between two readings divided by the time between them, so the
-// figure shown is by construction the average over exactly this long. One
-// second follows top(1), and is short enough that the wait before the first
-// frame is not itself annoying.
-const DefaultInterval = time.Second
-
-// DefaultRows is how many processes to rank.
-const DefaultRows = 10
 
 var topCmd = &cobra.Command{
 	Use:   "top",
@@ -41,8 +30,11 @@ var topCmd = &cobra.Command{
 }
 
 func init() {
-	topCmd.Flags().IntP("number", "n", DefaultRows, "how many processes to list")
-	topCmd.Flags().DurationP("interval", "d", DefaultInterval, "how long to measure for")
+	// The defaults shown here are placeholders: configuration is resolved in
+	// runTop, where a config file can raise them and an explicit flag still
+	// wins. Declaring them keeps `--help` honest about the built-in values.
+	topCmd.Flags().IntP("number", "n", top.DefaultRows, "how many processes to list")
+	topCmd.Flags().DurationP("interval", "d", top.DefaultInterval, "how long to measure for")
 	topCmd.Flags().StringP("sort", "s", "cpu", "sort key: cpu | mem")
 	topCmd.Flags().StringP("output", "o", "table", "output format: table | json")
 	topCmd.Flags().Bool("once", false, "print one frame and exit (automatic when output is not a terminal)")
@@ -55,15 +47,30 @@ func runTop(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	sortFlag, _ := cmd.Flags().GetString("sort")
-	sortKey, err := top.ParseSortKey(sortFlag)
+	cfg, err := config.Load(cmd.Flags(), configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("loading config: %w", err)
 	}
-	rows, _ := cmd.Flags().GetInt("number")
-	interval, _ := cmd.Flags().GetDuration("interval")
+
+	// Flags beat configuration, which beats the built-in defaults.
+	sortKey, rows, interval := cfg.Top.Sort, cfg.Top.Number, cfg.Top.Interval
+	if cmd.Flags().Changed("sort") {
+		sortFlag, _ := cmd.Flags().GetString("sort")
+		if sortKey, err = top.ParseSortKey(sortFlag); err != nil {
+			return err
+		}
+	}
+	if cmd.Flags().Changed("number") {
+		rows, _ = cmd.Flags().GetInt("number")
+	}
+	if cmd.Flags().Changed("interval") {
+		interval, _ = cmd.Flags().GetDuration("interval")
+	}
 	if interval <= 0 {
 		return fmt.Errorf("invalid interval %s: a rate needs time to pass", interval)
+	}
+	if rows < 1 {
+		return fmt.Errorf("invalid number of rows %d", rows)
 	}
 
 	opts := top.Options{Sort: sortKey, Owner: rankingOwner(), Limit: rows}

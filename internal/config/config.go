@@ -5,6 +5,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
+	"github.com/xunull/pcpm/internal/top"
 	"github.com/xunull/pcpm/internal/watch"
 )
 
@@ -24,6 +26,21 @@ type Config struct {
 
 	// Watch is the collector's schedule.
 	Watch WatchConfig
+
+	// Top is how the CPU ranking behaves by default.
+	Top TopConfig
+}
+
+// TopConfig is what `pcpm top` does when asked for nothing in particular.
+//
+// Interval is both the refresh period and the window each figure averages over
+// — they are the same measurement, so they cannot be set apart. Raising it
+// steadies the ordering at the cost of noticing a change later, and of a longer
+// wait before a one-shot answers.
+type TopConfig struct {
+	Interval time.Duration
+	Number   int
+	Sort     top.SortKey
 }
 
 // WatchConfig is how often the collector works. Raising SampleInterval trades
@@ -61,6 +78,9 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v.SetDefault("watch.rollup_interval", watch.DefaultRollupInterval)
 	v.SetDefault("watch.raw_retention", watch.DefaultRawRetention)
 	v.SetDefault("watch.rollup_retention", watch.DefaultRollupRetention)
+	v.SetDefault("top.interval", top.DefaultInterval)
+	v.SetDefault("top.number", top.DefaultRows)
+	v.SetDefault("top.sort", "cpu")
 
 	v.SetEnvPrefix("PCPM")
 	v.AutomaticEnv()
@@ -87,8 +107,24 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 		flagIgnore, _ := flags.GetStringArray("ignore")
 		ignore = append(ignore, flagIgnore...)
 	}
+	sortKey, err := top.ParseSortKey(v.GetString("top.sort"))
+	if err != nil {
+		return Config{}, fmt.Errorf("top.sort: %w", err)
+	}
+	if n := v.GetInt("top.number"); n < 1 {
+		return Config{}, fmt.Errorf("top.number: %d is not a number of rows to show", n)
+	}
+	if d := v.GetDuration("top.interval"); d <= 0 {
+		return Config{}, fmt.Errorf("top.interval: %s leaves no time for a rate to be measured", d)
+	}
+
 	return Config{
 		Ignore: ignore,
+		Top: TopConfig{
+			Interval: v.GetDuration("top.interval"),
+			Number:   v.GetInt("top.number"),
+			Sort:     sortKey,
+		},
 		Watch: WatchConfig{
 			SampleInterval:      v.GetDuration("watch.sample_interval"),
 			DiscoverInterval:    v.GetDuration("watch.discover_interval"),

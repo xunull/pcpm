@@ -10,6 +10,7 @@
 | --- | --- |
 | [`pcpm forgotten`](#pcpm-forgotten) | 找出已经没人管、却还在跑的进程 —— 比如 AI 编程工具为了调试帮你起的服务,它自己退出了,那个服务却一跑就是好几天。 |
 | [`pcpm ports`](#pcpm-ports) | 看你的哪些进程正占着监听中的 TCP 端口。 |
+| [`pcpm top`](#pcpm-top) | 排出此刻最吃 CPU 的进程 —— 并标出其中哪些已经没人管了。 |
 | [`pcpm watch`](#pcpm-watch) | 持续记录一个进程及其整棵树的资源占用,事后可回查 —— 包括进程已经退出之后。 |
 
 ---
@@ -18,6 +19,7 @@
 
 - [`pcpm forgotten`](#pcpm-forgotten) —— 以及[它凭什么准](#forgotten-凭什么准)
 - [`pcpm ports`](#pcpm-ports)
+- [`pcpm top`](#pcpm-top) —— 以及[它看不到什么](#top-看不到什么)
 - [`pcpm watch`](#pcpm-watch)
 - [安装](#安装)
 - [配置](#配置)
@@ -110,6 +112,78 @@ pcpm ports -o json
 ```
 
 端口后带 `*` 表示绑在全部网卡上,可从外部访问。
+
+## `pcpm top`
+
+此刻什么在吃 CPU,从多到少。
+
+```console
+$ pcpm top -n 6
+CPU  171% of 1000% (10 cores)  ·  attributed 163%  ·  unattributed 7.6% (needs sudo)
+MEM  49 GB / 64 GB
+
+%CPU     RSS    PID  NAME                           APP     DIR
+18.6  217 MB  56394  stable                         Warp    ~
+16.7  609 MB  61742  claude                                 …/open-source/pcpm
+10.5  298 MB  34442  Kimi Helper (Renderer)         Kimi    /
+10.0  352 MB  54999  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
+ 8.3   23 MB  17320  pcpm                                   …/open-source/pcpm
+ 7.4   36 MB  25121  bun                                    …/open-source/pcpm
+```
+
+在终端里它会按间隔持续刷新,按 `q` 退出。一旦被管道或重定向接走,就只打一帧然后退出 —— 所以 `pcpm top | head`、`pcpm top -o json > f.json` 都不需要额外加开关;在终端里想只打一帧,用 `--once`。
+
+```
+q quit    [c cpu]  m memory    every 1s
+```
+
+**它要等一秒才出结果,这不是 bug。** 内核根本不存"CPU 使用率"这个数,只存"这个进程从出生到现在一共烧了多少 CPU 秒"。率只能是两次读数之差,所以 pcpm 必须读两遍再相减。任何瞬间就给出答案的工具,报的都是**终身平均** —— `ps aux` 的 `%CPU` 就是"累计 CPU ÷ 进程年龄":实测某个真实占用 26.5% 的进程,它报 14.5%。
+
+**百分比以单核为分母。** 100% = 吃满一个核;一个跑在八个核上的进程显示 800%,表头那个 `of 1000%` 就是这台十核机器的满载值。若改用整机做分母,最常见的那种故障 —— 单线程死循环 —— 会被显示成一个看着没事的 10%。
+
+### 它和 `top` 的区别在哪
+
+`/usr/bin/top` 是 setuid root 的,它能看到的比 pcpm 永远能看到的多。所以 `pcpm top` 去回答一个 `top` 结构上答不了的问题:**这里面哪些,是已经没人记得为什么还在跑的?**
+
+```console
+$ pcpm top -n 400
+   %CPU     RSS    PID  NAME    APP   DIR
+!   0.0   21 MB  75403  bun           …/kapa-wiki/xiaochengxu-insight-wiki
+!   0.0   34 MB  35722  bun           …/xunull-thinking/diandian
+!   0.0   34 MB  81142  bun           …/open-source/cuwatch
+
+! nothing is looking after this — see `pcpm forgotten`
+```
+
+判据与 [`pcpm forgotten`](#pcpm-forgotten) 完全一致,并且标记会落在这棵树的**每一个成员**上,而不只是树根 —— 真正在烧 CPU 的往往是子进程。
+
+### 列的含义
+
+| 列 | |
+| --- | --- |
+| `!` | 这个进程属于一棵没人管的进程树。没有任何一行符合时,该列不显示。 |
+| `%CPU` | 以单核为分母,统计的是最近一个间隔。可以超过 100%。 |
+| `RSS` | 常驻内存,用绝对值而不是"占 64 GB 的百分之几"。 |
+| `NAME` | 可执行文件名。 |
+| `APP` | 该进程所属的 macOS 应用 —— 取路径中**最外层**的 `.app`。一个应用包含很多进程。Linux 上不显示,不在 bundle 里的进程也没有。 |
+| `DIR` | 启动目录。这是把同名进程分开的关键:这台机器上曾有两个 `claude` 的命令行**完全相同**,而它们分属四个不同的仓库。 |
+
+`-o json` 会给出全部字段且不截断,包括表格放不下的完整命令行,以及表头那些数字(在 `cpu` 和 `memory` 下)。
+
+### `top` 看不到什么
+
+**这台机器上大约 70–85% 的忙碌 CPU。** 六次两秒窗口实测:84.0、86.0、82.4、69.9、82.3、84.7 个百分点。
+
+剩下的那部分是"未归属",表头会明说,而不是悄悄摊进各行里。两个原因:
+
+- **别人的进程返回 0,而不是报错。** macOS 上 `proc_pidinfo` 只对 root 或同 UID 的调用者给真值。这台机器上 205 个属于其他用户的进程,**全部**返回 CPU 0、RSS 0,且一个错误都没有。`ps` 和 `top` 之所以不受限,是因为 Apple 把它们做成了 setuid root(`4755` 与 `4555`);一个用 Homebrew 装的 Go 程序不是。
+- **`kernel_task` 根本读不到。** 它是 PID 0,gopsutil 直接拒绝 —— 即便是 root 也一样。
+
+与其把一堆明知为 0 的进程也排进去、从而把机器上真正最忙的那些排到榜尾(而排序恰恰是这个榜单存在的全部意义),pcpm 选择只排它能测准的,并把缺口量化出来。`sudo pcpm top` 除 `kernel_task` 外都能覆盖。理由见 [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md)。
+
+### `top` 和 `watch` 不是同一个工具
+
+`pcpm top` 回答"**现在**什么忙",看完就忘。[`pcpm watch`](#pcpm-watch) 回答"这东西**一直以来**在干什么",并且记着。两者谁也不是谁的简化版。
 
 ## `pcpm watch`
 
@@ -228,6 +302,11 @@ watch:
   rollup_interval: 1m       # 降采样的桶大小
   raw_retention: 48h        # 全分辨率原始数据保留多久
   rollup_retention: 720h    # 降采样数据保留多久(30 天)
+
+top:
+  interval: 1s              # 既是刷新周期,也是每个数字的平均窗口
+  number: 10                # 打印几行(在终端里的实时视图会按窗口高度自适应)
+  sort: cpu                 # cpu | mem
 ```
 
 | 配置项 | 调大 | 调小 |
@@ -235,6 +314,7 @@ watch:
 | `sample_interval` | 更省空间,曲线更粗 | 曲线更细,存储按比例增加。采一棵 10 进程的树约 106 µs,CPU 不是瓶颈 |
 | `discover_interval` | 更省;活不到一个周期的子进程会被完全漏掉 | 能抓到更短命的子进程。每次都要遍历整张进程表,约 27 ms |
 | `raw_retention` | 能下钻到单个进程的时间跨度更长 | 数据库更小;那段时间仍由 rollup 覆盖 |
+| `top.interval` | 排序更稳,但 `--once` 要等更久 | 变化反应更快,代价是数字更抖。之所以只有一个配置项,是因为刷新周期**就是**那个平均窗口 |
 
 优先级为 `flag > PCPM_* 环境变量 > 配置文件 > 内置默认`。`--ignore` 是**追加**到配置列表之上,而不是替换它。
 
@@ -245,6 +325,8 @@ watch:
 - **PID 复用会导致 `forgotten` 漏报。** `PGID` 本身就是一个 PID 值,如果那个已死组长的号被一个毫不相关的新进程复用,这一条就会被漏掉。方向是漏报,不会产生误报。`watch` 不受影响 —— 监控目标同时用启动时间和 PID 双重锁定。
 - **`watch` 会漏掉极短命的子进程。** 在两次树发现之间生灭的进程不会被采到。在意的话把 `discover_interval` 调小。
 - **`watch` 尚未采集网络流量** —— 目前只有 CPU 与内存。按进程统计网络字节没有可移植的数据源:macOS 可以通过 `nettop` 拿到,Linux 上没有免 root 的等价物。
+- **不加 `sudo` 时,`top` 只看得到约 70–85% 的忙碌 CPU**,且永远看不到 `kernel_task`。其他用户的进程会返回 0 而不是报错,因此它们被排除在外,而不是以 0 参与排序;缺口大小由表头给出。见 [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md)。
+- **`top` 的 `APP` 列仅限 macOS。** 它取自可执行文件路径中的 `.app` bundle,Linux 上没有对应物,该列在那里直接不显示。
 - **仅 Linux 与 macOS。** Windows 没有进程组;容器有独立的 PID 命名空间,所以 pcpm 应在宿主机上运行。
 
 ## 延伸阅读
@@ -255,6 +337,7 @@ watch:
   - [ADR-0007](docs/adr/0007-metrics-in-sqlite-not-a-tsdb.md) —— 指标为何用 SQLite 而不是时序数据库
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) —— Sample 为何存累计计数器而非百分比
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) —— 采集器为何是「单守护进程 + 以数据库为控制面」
+  - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) —— `top` 为何只排它能真正测准的进程
 - [`CONTEXT.md`](CONTEXT.md) —— 项目术语表
 
 ## 许可证

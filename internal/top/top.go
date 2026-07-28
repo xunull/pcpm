@@ -24,6 +24,17 @@ import (
 	"github.com/xunull/pcpm/internal/proc"
 )
 
+// Defaults for the ranking. They live here rather than in the config package so
+// that configuration and code cannot drift apart on what "the default" is.
+//
+// One second follows top(1). The interval is both the refresh period and the
+// window each figure averages over, so it cannot be shortened for
+// responsiveness without also making the figures noisier.
+const (
+	DefaultInterval = time.Second
+	DefaultRows     = 10
+)
+
 // Reading is one process's cumulative counters at one instant. Created is
 // carried so that a PID reused between two snapshots can be told apart from the
 // process that held it before.
@@ -418,7 +429,16 @@ func (r *Ranker) Next(now time.Time) (*Frame, error) {
 }
 
 // bundleSuffix marks a macOS application bundle directory.
-const bundleSuffix = ".app"
+//
+// cloneSuffix is what macOS appends when it runs an application from a
+// code-signing clone: the bundle appears as "Google Chrome.app.bundle" under
+// /private/var/folders. Chrome's main process does this while its helpers run
+// from /Applications, so missing it left the busiest row of a real ranking with
+// no application while the rows beneath it had one.
+const (
+	bundleSuffix = ".app"
+	cloneSuffix  = ".bundle"
+)
 
 // Application returns the macOS application an executable belongs to, or "" for
 // one that belongs to none.
@@ -439,7 +459,7 @@ func Application(exe string) string {
 	// The last segment is the executable itself. A bundle is a directory that
 	// contains one, so a path ending at a .app groups nothing.
 	for _, s := range segments[:max(len(segments)-1, 0)] {
-		if name, ok := strings.CutSuffix(s, bundleSuffix); ok && name != "" {
+		if name, ok := strings.CutSuffix(strings.TrimSuffix(s, cloneSuffix), bundleSuffix); ok && name != "" {
 			return name
 		}
 	}

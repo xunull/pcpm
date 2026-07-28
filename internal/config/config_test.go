@@ -7,6 +7,10 @@ import (
 	"testing"
 
 	"github.com/spf13/pflag"
+	"strings"
+	"time"
+
+	"github.com/xunull/pcpm/internal/top"
 )
 
 // newFlags builds a flag set matching the commands' --ignore flag.
@@ -73,4 +77,65 @@ func TestLoad(t *testing.T) {
 			t.Errorf("ignore: want both a and b, got %v", cfg.Ignore)
 		}
 	})
+}
+
+func TestTopDefaults(t *testing.T) {
+	cfg, err := Load(nil, filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Top.Interval != top.DefaultInterval {
+		t.Errorf("interval = %s, want %s", cfg.Top.Interval, top.DefaultInterval)
+	}
+	if cfg.Top.Number != top.DefaultRows {
+		t.Errorf("number = %d, want %d", cfg.Top.Number, top.DefaultRows)
+	}
+	if cfg.Top.Sort != top.ByCPU {
+		t.Errorf("sort = %v, want ByCPU", cfg.Top.Sort)
+	}
+}
+
+func TestTopReadsItsSectionFromTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("top:\n  interval: 3s\n  number: 25\n  sort: mem\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(nil, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Top.Interval != 3*time.Second {
+		t.Errorf("interval = %s, want 3s", cfg.Top.Interval)
+	}
+	if cfg.Top.Number != 25 {
+		t.Errorf("number = %d, want 25", cfg.Top.Number)
+	}
+	if cfg.Top.Sort != top.ByMemory {
+		t.Errorf("sort = %v, want ByMemory", cfg.Top.Sort)
+	}
+}
+
+// A setting that cannot be honoured must say which one it was. Quietly falling
+// back to the default leaves a reader wondering why their file has no effect.
+func TestBadTopSettingsFailByName(t *testing.T) {
+	for _, tc := range []struct{ name, body, wants string }{
+		{"sort", "top:\n  sort: sideways\n", "top.sort"},
+		{"number", "top:\n  number: 0\n", "top.number"},
+		{"interval", "top:\n  interval: 0s\n", "top.interval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(nil, path)
+			if err == nil {
+				t.Fatalf("%s should have failed", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("error %q does not name %q", err, tc.wants)
+			}
+		})
+	}
 }

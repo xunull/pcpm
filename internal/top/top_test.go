@@ -415,6 +415,15 @@ func TestApplication(t *testing.T) {
 			"Doubao",
 		},
 		{"plain bundle", "/Applications/Warp.app/Contents/MacOS/stable", "Warp"},
+		{
+			// macOS runs some applications from a code-signing clone, where the
+			// bundle is suffixed .app.bundle. Chrome's main process does this
+			// while its helpers run from /Applications, so without this the
+			// busiest row has no application and the rows under it do.
+			"code-signing clone",
+			"/private/var/folders/kz/b80mnt6j2fgfllrtkj5nq5680000gn/X/com.google.Chrome.code_sign_clone/code_sign_clone.kyxYEE/Google Chrome.app.bundle/Contents/MacOS/Google Chrome",
+			"Google Chrome",
+		},
 		// A process outside any bundle belongs to no application. It does not
 		// belong to whatever launched it: labelling `claude` as `Warp` would
 		// point at the terminal when the answer is the command.
