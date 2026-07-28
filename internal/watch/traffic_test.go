@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -204,7 +205,7 @@ func waitFor(t *testing.T, cond func() bool) bool {
 }
 
 func TestReaderAccumulatesWhatTheProgramPrints(t *testing.T) {
-	r, err := startReader(fakeStream(t,
+	r, err := startReader2(fakeStream(t,
 		trafficHeader,
 		"bun.100,1000,50,",
 		trafficHeader,
@@ -226,7 +227,7 @@ func TestReaderAccumulatesWhatTheProgramPrints(t *testing.T) {
 // A header that has moved must stop the reading rather than be skipped: the
 // columns after it can no longer be trusted by position.
 func TestReaderStopsOnAnUnfamiliarHeader(t *testing.T) {
-	r, err := startReader(fakeStream(t, ",bytes_out,bytes_in,", "bun.100,1000,50,"))
+	r, err := startReader2(fakeStream(t, ",bytes_out,bytes_in,", "bun.100,1000,50,"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +244,7 @@ func TestReaderStopsOnAnUnfamiliarHeader(t *testing.T) {
 // A source that exits is a failure the caller has to be able to see, because a
 // silent stop looks exactly like a machine that went quiet.
 func TestReaderReportsWhenTheProgramExits(t *testing.T) {
-	r, err := startReader(exec.Command("sh", "-c", "printf '%s\\n' '"+trafficHeader+"'"))
+	r, err := startReader2(exec.Command("sh", "-c", "printf '%s\\n' '"+trafficHeader+"'"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +256,7 @@ func TestReaderReportsWhenTheProgramExits(t *testing.T) {
 }
 
 func TestClosingTheReaderLeavesNothingRunning(t *testing.T) {
-	r, err := startReader(fakeStream(t, trafficHeader))
+	r, err := startReader2(fakeStream(t, trafficHeader))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,5 +268,90 @@ func TestClosingTheReaderLeavesNothingRunning(t *testing.T) {
 	// Signal 0 probes for existence without delivering anything.
 	if err := syscall.Kill(pid, 0); err == nil {
 		t.Errorf("pid %d is still running after Close", pid)
+	}
+}
+
+// startReader2 gives each reader test its own accumulator.
+func startReader2(cmd *exec.Cmd) (*reader, error) { return startReader(cmd, newAccumulator()) }
+
+// --- supervision ---------------------------------------------------------
+
+// A restart must not cost what was already counted. The accumulator therefore
+// outlives any one child; a reader owning its own would reset every total the
+// moment the source hiccuped.
+func TestARestartedSourceKeepsWhatItAlreadyCounted(t *testing.T) {
+	runs := 0
+	s, err := startSupervisor(func() *exec.Cmd {
+		runs++
+		if runs == 1 {
+			// prints, accumulates 3000, then exits
+			return exec.Command("sh", "-c", "printf '%s\\n' '"+trafficHeader+"' 'bun.100,1000,0,' 'bun.100,4000,0,'")
+		}
+		return fakeStream(t, trafficHeader, "bun.100,90000,0,", "bun.100,90500,0,")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if !waitFor(t, func() bool { return s.Snapshot()[100].InBytes == 3000 }) {
+		t.Fatalf("first run did not accumulate: %+v", s.Snapshot()[100])
+	}
+	// the child has exited; asking again restarts it
+	if !waitFor(t, func() bool { return s.Snapshot()[100].InBytes == 3500 }) {
+		t.Errorf("after a restart the total is %+v, want 3000 kept plus 500 new",
+			s.Snapshot()[100])
+	}
+	if err := s.Err(); err != nil {
+		t.Errorf("a restarted source should not be reported as failed: %v", err)
+	}
+	if runs < 2 {
+		t.Errorf("the source was started %d times, want it restarted", runs)
+	}
+}
+
+// A source that will not stay up is not worth restarting forever.
+func TestASourceThatKeepsDyingIsGivenUpOn(t *testing.T) {
+	runs := 0
+	s, err := startSupervisor(func() *exec.Cmd {
+		runs++
+		return exec.Command("sh", "-c", "exit 1")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if !waitFor(t, func() bool { return s.Err() != nil }) {
+		t.Fatal("a source that never works was never given up on")
+	}
+	if runs > maxTrafficRestarts+1 {
+		t.Errorf("started %d times, want at most %d", runs, maxTrafficRestarts+1)
+	}
+	if s.Snapshot() != nil {
+		t.Error("a source that has been given up on should report no figures")
+	}
+}
+
+// Retrying cannot fix an output format that has changed, so it is not retried.
+func TestAChangedFormatIsNotRetried(t *testing.T) {
+	runs := 0
+	s, err := startSupervisor(func() *exec.Cmd {
+		runs++
+		return fakeStream(t, ",bytes_out,bytes_in,")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if !waitFor(t, func() bool { return s.Err() != nil }) {
+		t.Fatal("a changed format was not reported")
+	}
+	if runs != 1 {
+		t.Errorf("the source was started %d times; a format change is permanent", runs)
+	}
+	if !errors.Is(s.Err(), ErrTrafficFormat) {
+		t.Errorf("the failure should be recognisable as a format change, got %v", s.Err())
 	}
 }

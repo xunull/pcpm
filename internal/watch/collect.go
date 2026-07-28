@@ -103,6 +103,11 @@ type Collector struct {
 	// the identity of the process it describes, which is only known here.
 	members       map[int64][]proc.Process
 	lastDiscovery time.Time
+
+	// trafficReported keeps the traffic source's failure from being repeated
+	// on every tick. It is said once, loudly, rather than becoming noise that
+	// scrolls past.
+	trafficReported bool
 }
 
 func NewCollector(store *Store, machine Machine) *Collector {
@@ -268,7 +273,14 @@ func survivors(known []proc.Process, ix proc.Index) []proc.Process {
 // distinction between "no traffic" and "no measurement" has to be carried
 // elsewhere rather than inferred from the figures.
 func (c *Collector) trafficSnapshot() map[int32]Traffic {
-	if c.Traffic == nil || c.Traffic.Err() != nil {
+	if c.Traffic == nil {
+		return nil
+	}
+	if err := c.Traffic.Err(); err != nil {
+		if !c.trafficReported {
+			c.trafficReported = true
+			c.report(fmt.Sprintf("traffic is no longer being measured: %v", err))
+		}
 		return nil
 	}
 	return c.Traffic.Snapshot()

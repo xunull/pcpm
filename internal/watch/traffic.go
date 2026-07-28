@@ -62,9 +62,9 @@ func (a *accumulator) feed(line string) error {
 	}
 	if strings.HasPrefix(line, ",") {
 		if line != trafficHeader {
-			return fmt.Errorf("unrecognised traffic header %q, expected %q "+
-				"(the output format has changed and columns can no longer be trusted by position)",
-				line, trafficHeader)
+			return fmt.Errorf("%w: got header %q, expected %q "+
+				"(columns can no longer be trusted by position)",
+				ErrTrafficFormat, line, trafficHeader)
 		}
 		return nil
 	}

@@ -2,6 +2,7 @@ package watch
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -367,5 +368,39 @@ func TestCollectionWorksWithNoTrafficSource(t *testing.T) {
 
 	if err := c.Tick(); err != nil {
 		t.Fatalf("a collector with no traffic source should work: %v", err)
+	}
+}
+
+// A source that has been given up on must be announced — but once. Repeating it
+// every tick turns the one line that matters into scrolling noise.
+func TestALostTrafficSourceIsAnnouncedOnce(t *testing.T) {
+	started := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	m := &fakeMachine{
+		procs: []proc.Process{{PID: 100, PPID: 1, Created: started}},
+		cpu:   map[int32]float64{100: 1},
+	}
+	c, s, clock := collector(t, m)
+	if _, err := s.AddTarget(Target{PID: 100, Created: started, Name: "bun"}, *clock); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	c.Report = func(l string) { lines = append(lines, l) }
+	c.Traffic = stubTraffic{err: errors.New("gave up after 3 restarts")}
+
+	for range 3 {
+		if err := c.Tick(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	said := 0
+	for _, l := range lines {
+		if strings.Contains(l, "traffic is no longer being measured") {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Errorf("the traffic failure was reported %d times, want exactly 1:\n%s",
+			said, strings.Join(lines, "\n"))
 	}
 }

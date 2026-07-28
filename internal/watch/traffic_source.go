@@ -3,6 +3,7 @@ package watch
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -42,18 +43,117 @@ type reader struct {
 	done chan struct{}
 }
 
-// StartTrafficSource begins measuring. A platform with no way to measure
-// returns ErrTrafficUnsupported, which callers treat as "no traffic column"
-// rather than as a failure to start.
+// ErrTrafficFormat marks a failure that retrying cannot fix. A program that has
+// exited may well start again; one whose output no longer matches what pcpm can
+// read will produce the same unreadable output every time.
+var ErrTrafficFormat = errors.New("the traffic source's output format is not one pcpm can read")
+
+// maxTrafficRestarts is how many times a source that keeps dying is restarted
+// before pcpm stops trying. A source failing this persistently is not going to
+// recover, and a restart loop would cost more than the measurement is worth.
+const maxTrafficRestarts = 3
+
+// StartTrafficSource begins measuring, keeping the source alive as long as it is
+// worth keeping alive. A platform with no way to measure returns
+// ErrTrafficUnsupported, which callers treat as "no traffic column" rather than
+// as a failure to start.
 func StartTrafficSource() (TrafficSource, error) {
-	cmd := newTrafficCommand(trafficSourceInterval)
-	if cmd == nil {
+	if newTrafficCommand(trafficSourceInterval) == nil {
 		return nil, ErrTrafficUnsupported
 	}
-	return startReader(cmd)
+	return startSupervisor(func() *exec.Cmd { return newTrafficCommand(trafficSourceInterval) })
 }
 
-func startReader(cmd *exec.Cmd) (*reader, error) {
+// supervisor keeps one traffic source running behind a stable handle.
+//
+// The accumulator lives here rather than in the reader, so that restarting the
+// child keeps everything counted so far. A reader owning its own accumulator
+// would silently reset every total the moment the source hiccuped.
+type supervisor struct {
+	mu       sync.Mutex
+	acc      *accumulator
+	newCmd   func() *exec.Cmd
+	reader   *reader
+	restarts int
+	gaveUp   error
+}
+
+func startSupervisor(newCmd func() *exec.Cmd) (*supervisor, error) {
+	s := &supervisor{acc: newAccumulator(), newCmd: newCmd}
+	r, err := startReader(newCmd(), s.acc)
+	if err != nil {
+		return nil, err
+	}
+	s.reader = r
+	return s, nil
+}
+
+// ensure restarts a failed source, or gives up on one that will not recover.
+//
+// It runs when the collector asks for figures rather than on a timer of its own:
+// a source is only worth restarting when something wants to read it, and this
+// keeps the supervisor free of a goroutine that would outlive its usefulness.
+func (s *supervisor) ensure() {
+	if s.gaveUp != nil || s.reader == nil {
+		return
+	}
+	failure := s.reader.Err()
+	if failure == nil {
+		return
+	}
+
+	_ = s.reader.Close()
+	s.reader = nil
+
+	if errors.Is(failure, ErrTrafficFormat) {
+		s.gaveUp = failure
+		return
+	}
+	s.restarts++
+	if s.restarts > maxTrafficRestarts {
+		s.gaveUp = fmt.Errorf("gave up after %d restarts: %w", maxTrafficRestarts, failure)
+		return
+	}
+	// The child's counters begin again from zero, so forget where each process
+	// was last seen; the totals already accumulated are kept.
+	s.acc.restart()
+	r, err := startReader(s.newCmd(), s.acc)
+	if err != nil {
+		s.gaveUp = fmt.Errorf("could not restart the traffic source: %w", err)
+		return
+	}
+	s.reader = r
+}
+
+func (s *supervisor) Snapshot() map[int32]Traffic {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensure()
+	if s.gaveUp != nil || s.reader == nil {
+		return nil
+	}
+	return s.reader.Snapshot()
+}
+
+// Err reports only a source pcpm has stopped trying to keep alive. A child that
+// died and was restarted is not a failure the caller needs to know about.
+func (s *supervisor) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensure()
+	return s.gaveUp
+}
+
+func (s *supervisor) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reader != nil {
+		return s.reader.Close()
+	}
+	return nil
+}
+
+func startReader(cmd *exec.Cmd, acc *accumulator) (*reader, error) {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -61,7 +161,7 @@ func startReader(cmd *exec.Cmd) (*reader, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	r := &reader{acc: newAccumulator(), cmd: cmd, out: out, done: make(chan struct{})}
+	r := &reader{acc: acc, cmd: cmd, out: out, done: make(chan struct{})}
 	go r.consume(out)
 	return r, nil
 }
