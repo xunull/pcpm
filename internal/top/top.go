@@ -192,12 +192,15 @@ func Rank(before, after Snapshot, known map[int32]proc.Process, opt Options) []P
 		})
 	}
 
-	slices.SortFunc(out, opt.Sort.compare)
+	Sort(out, opt.Sort)
 	if opt.Limit > 0 && len(out) > opt.Limit {
 		out = out[:opt.Limit]
 	}
 	return out
 }
+
+// Sort orders a ranking in place, busiest first by the given key.
+func Sort(rows []Process, by SortKey) { slices.SortFunc(rows, by.compare) }
 
 // compare orders two rows. The secondary keys matter more than they look: equal
 // rates are common — most processes are idle — and without a total order the

@@ -9,6 +9,7 @@ import (
 
 	"github.com/xunull/pcpm/internal/render"
 	"github.com/xunull/pcpm/internal/top"
+	"github.com/xunull/pcpm/internal/tui"
 )
 
 // DefaultInterval is how long the ranking watches before reporting.
@@ -44,6 +45,7 @@ func init() {
 	topCmd.Flags().DurationP("interval", "d", DefaultInterval, "how long to measure for")
 	topCmd.Flags().StringP("sort", "s", "cpu", "sort key: cpu | mem")
 	topCmd.Flags().StringP("output", "o", "table", "output format: table | json")
+	topCmd.Flags().Bool("once", false, "print one frame and exit (automatic when output is not a terminal)")
 	rootCmd.AddCommand(topCmd)
 }
 
@@ -64,16 +66,28 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid interval %s: a rate needs time to pass", interval)
 	}
 
-	frame, err := rankOnce(top.Host{}, interval, top.Options{
-		Sort:  sortKey,
-		Owner: rankingOwner(),
-		Limit: rows,
-	})
+	opts := top.Options{Sort: sortKey, Owner: rankingOwner(), Limit: rows}
+	out := cmd.OutOrStdout()
+	once, _ := cmd.Flags().GetBool("once")
+
+	// An interactive view has nowhere to draw when output is piped or
+	// redirected, so a non-terminal is itself a request for one frame.
+	if format == render.FormatTable && !once && isTerminal(out) {
+		home, _ := os.UserHomeDir()
+		// A reader who named a number gets that number; one who did not gets as
+		// much of the machine as the window holds, the way top(1) behaves.
+		fit := 0
+		if cmd.Flags().Changed("number") {
+			fit = rows
+		}
+		return tui.RunTop(cmd.Context(), top.Host{}, opts, interval, home, fit)
+	}
+
+	frame, err := rankOnce(top.Host{}, interval, opts)
 	if err != nil {
 		return err
 	}
 
-	out := cmd.OutOrStdout()
 	switch format {
 	case render.FormatJSON:
 		body, err := render.TopJSON(frame.Rows, frame.Totals)
