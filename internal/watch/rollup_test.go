@@ -160,3 +160,91 @@ func TestSeriesForChoosesTheTableFromTheWindow(t *testing.T) {
 		t.Error("a long window returned nothing; the rollup was not consulted")
 	}
 }
+
+// seedTraffic stores samples carrying a cumulative traffic counter alongside CPU.
+func seedTraffic(t *testing.T, s *Store, targetID int64, base time.Time, pid int32, counters []int64) {
+	t.Helper()
+	for i, c := range counters {
+		when := base.Add(time.Duration(i*5) * time.Second)
+		err := s.SaveSamples(targetID, when, []Sample{{
+			PID: pid, Name: "proc", CPUSeconds: float64(i), RSSBytes: 100 << 20,
+			Traffic: Traffic{InBytes: c, OutBytes: c / 2},
+		}})
+		if err != nil {
+			t.Fatalf("SaveSamples: %v", err)
+		}
+	}
+}
+
+// Raw Samples are dropped after their retention period. Without traffic in the
+// rollups the chart would empty from the left two days later while the CPU
+// chart beside it stayed full — a failure whose cause is two days upstream of
+// its symptom.
+func TestTrafficSurvivesTheRollup(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// 1 MiB per 5s interval for two minutes
+	var counters []int64
+	for i := range 25 {
+		counters = append(counters, int64(i)<<20)
+	}
+	seedTraffic(t, s, id, base, 100, counters)
+
+	fromRaw, err := s.Series(id, base, at(base, 120), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Rollup(at(base, 300), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	fromRollup, err := s.RolledSeries(id, base, at(base, 120), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := func(ps []Point) (int64, int64) {
+		var in, out int64
+		for _, p := range ps {
+			in += p.Traffic.InBytes
+			out += p.Traffic.OutBytes
+		}
+		return in, out
+	}
+	rawIn, rawOut := sum(fromRaw)
+	rollIn, rollOut := sum(fromRollup)
+
+	if rawIn == 0 {
+		t.Fatal("the raw series carries no traffic to compare against")
+	}
+	if rollIn != rawIn || rollOut != rawOut {
+		t.Errorf("rollup totals %d/%d, raw totals %d/%d — traffic did not survive",
+			rollIn, rollOut, rawIn, rawOut)
+	}
+}
+
+// A total over a window is a sum of buckets, so it stays correct when the
+// counter behind it began again — which happens every time the collector
+// restarts (ADR-0012).
+func TestATotalIsUnaffectedByACounterThatRestarted(t *testing.T) {
+	s, id, base := seededTarget(t)
+	// climbs to 4 MiB, the collector restarts, climbs to 3 MiB again
+	seedTraffic(t, s, id, base, 100, []int64{
+		0, 1 << 20, 2 << 20, 3 << 20, 4 << 20,
+		0, 1 << 20, 2 << 20, 3 << 20,
+	})
+
+	points, err := s.Series(id, base, at(base, 300), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, p := range points {
+		total += p.Traffic.InBytes
+	}
+
+	// 4 MiB before the restart, 3 MiB after. The MiB in flight across the
+	// restart is unknowable and is not invented.
+	if want := int64(7 << 20); total != want {
+		t.Errorf("total = %d MiB, want %d MiB — a restart must not make it negative or tiny",
+			total>>20, want>>20)
+	}
+}

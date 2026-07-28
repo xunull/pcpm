@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 9
+const schemaVersion = 11
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -102,6 +102,16 @@ var migrations = []string{
 	// true of them: nothing was measuring it.
 	`ALTER TABLE sample ADD COLUMN net_in_bytes INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE sample ADD COLUMN net_out_bytes INTEGER NOT NULL DEFAULT 0`,
+
+	// 9 -> 11: Traffic in the rollups, so it survives past the raw retention
+	// the way CPU and memory already do. Like cpu_seconds here — and unlike
+	// the sample table — these are what moved *during the bucket* rather than
+	// a cumulative counter. That is also what makes them correct across a
+	// collector restart: a bucket's figure is derived from samples inside it,
+	// so a counter that began again outside the bucket cannot distort it, and
+	// totals over a window are a sum rather than a difference (ADR-0012).
+	`ALTER TABLE rollup ADD COLUMN net_in_bytes INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE rollup ADD COLUMN net_out_bytes INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a

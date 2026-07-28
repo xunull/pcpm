@@ -18,7 +18,11 @@ type Point struct {
 	PeakCPUPercent float64
 	PeakRSSBytes   int64
 	RSSBytes       int64
-	Procs          int
+	// Traffic is what moved during this bucket, not a cumulative counter, so
+	// totals over a window are a sum of buckets rather than a difference
+	// between endpoints (ADR-0012).
+	Traffic Traffic
+	Procs   int
 	// Gap is true when the samples this bucket was derived from are further
 	// apart than collection should have made them — the machine was asleep, or
 	// the collector was not running. The figures remain correct averages; what
@@ -111,6 +115,8 @@ func (s *Store) series(targetID int64, only int32, from, to time.Time, bucket ti
 			acc[key] = sh
 		}
 		sh.cpuSeconds += d.cpuSeconds
+		sh.traffic.InBytes += d.traffic.InBytes
+		sh.traffic.OutBytes += d.traffic.OutBytes
 		sh.span += d.span
 		sh.rss = d.rss // the bucket's latest sample for this process
 		if d.span > 0 {
@@ -143,6 +149,9 @@ type share struct {
 	cpuSeconds float64
 	span       time.Duration
 	rss        int64
+	// traffic is bytes moved, which is additive — so a coarser bucket is built
+	// by summing finer ones, and a window's total is a sum of its buckets.
+	traffic Traffic
 	// peak is the highest rate any single interval inside the bucket reached,
 	// which averaging the bucket would otherwise erase.
 	peak    float64
@@ -163,6 +172,7 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 		peak       float64
 		rss        int64
 		peakRSS    int64
+		traffic    Traffic
 		procs      int
 	}
 	totals := map[int64]*total{}
@@ -180,6 +190,8 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 		t.peak += sh.peak
 		t.rss += sh.rss
 		t.peakRSS += sh.peakRSS
+		t.traffic.InBytes += sh.traffic.InBytes
+		t.traffic.OutBytes += sh.traffic.OutBytes
 		t.procs++
 	}
 
@@ -191,6 +203,7 @@ func buildPoints(acc map[bucketKey]*share, gaps map[int64]bool, bucket time.Dura
 			PeakCPUPercent: max(t.peak, t.cpuPercent),
 			RSSBytes:       t.rss,
 			PeakRSSBytes:   max(t.peakRSS, t.rss),
+			Traffic:        t.traffic,
 			Procs:          t.procs,
 			Gap:            gaps[at],
 		})
@@ -211,7 +224,11 @@ type delta struct {
 	cpuSeconds float64 // CPU consumed over the span
 	span       time.Duration
 	rss        int64 // resident memory at the later sample
-	gap        bool
+	// traffic is what moved over the span. A counter that fell contributes
+	// nothing rather than discarding the interval: for CPU a fall means a
+	// different process, but for traffic it only means the source restarted.
+	traffic Traffic
+	gap     bool
 }
 
 // cpuDeltas turns cumulative counters into per-interval usage, one process at a
@@ -243,8 +260,12 @@ func cpuDeltas(samples []Sample) []delta {
 				at:         cur.At,
 				pid:        pid,
 				cpuSeconds: used,
-				span:       span,
-				rss:        cur.RSSBytes,
+				traffic: Traffic{
+					InBytes:  rise(prev.Traffic.InBytes, cur.Traffic.InBytes),
+					OutBytes: rise(prev.Traffic.OutBytes, cur.Traffic.OutBytes),
+				},
+				span: span,
+				rss:  cur.RSSBytes,
 			})
 		}
 	}
