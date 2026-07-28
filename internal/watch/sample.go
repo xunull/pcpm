@@ -21,6 +21,10 @@ type Sample struct {
 	Name       string
 	CPUSeconds float64
 	RSSBytes   int64
+	// Traffic is zero both for a process that sent nothing and for one pcpm
+	// could not measure. Which it was is a property of the collector's traffic
+	// source at the time, not of the Sample.
+	Traffic Traffic
 }
 
 // SaveSamples stores one tick's worth of measurements for a target. Re-saving a
@@ -37,12 +41,15 @@ func (s *Store) SaveSamples(targetID int64, at time.Time, samples []Sample) erro
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO sample (target_id, at, pid, created, name, cpu_seconds, rss_bytes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sample (target_id, at, pid, created, name, cpu_seconds, rss_bytes,
+		                     net_in_bytes, net_out_bytes)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (target_id, at, pid) DO UPDATE SET
-		   cpu_seconds = excluded.cpu_seconds,
-		   rss_bytes   = excluded.rss_bytes,
-		   name        = excluded.name`)
+		   cpu_seconds   = excluded.cpu_seconds,
+		   rss_bytes     = excluded.rss_bytes,
+		   net_in_bytes  = excluded.net_in_bytes,
+		   net_out_bytes = excluded.net_out_bytes,
+		   name          = excluded.name`)
 	if err != nil {
 		return err
 	}
@@ -50,7 +57,8 @@ func (s *Store) SaveSamples(targetID int64, at time.Time, samples []Sample) erro
 
 	for _, m := range samples {
 		if _, err := stmt.Exec(targetID, at.UnixMilli(), m.PID,
-			m.Created.UnixMilli(), m.Name, m.CPUSeconds, m.RSSBytes); err != nil {
+			m.Created.UnixMilli(), m.Name, m.CPUSeconds, m.RSSBytes,
+			m.Traffic.InBytes, m.Traffic.OutBytes); err != nil {
 			return fmt.Errorf("storing sample for pid %d: %w", m.PID, err)
 		}
 	}
@@ -62,7 +70,7 @@ func (s *Store) SaveSamples(targetID int64, at time.Time, samples []Sample) erro
 // twice.
 func (s *Store) SamplesBetween(targetID int64, from, to time.Time) ([]Sample, error) {
 	rows, err := s.db.Query(
-		`SELECT at, pid, created, name, cpu_seconds, rss_bytes
+		`SELECT at, pid, created, name, cpu_seconds, rss_bytes, net_in_bytes, net_out_bytes
 		 FROM sample
 		 WHERE target_id = ? AND at >= ? AND at < ?
 		 ORDER BY at, pid`,
@@ -79,7 +87,8 @@ func (s *Store) SamplesBetween(targetID int64, from, to time.Time) ([]Sample, er
 			atMS      int64
 			createdMS int64
 		)
-		if err := rows.Scan(&atMS, &m.PID, &createdMS, &m.Name, &m.CPUSeconds, &m.RSSBytes); err != nil {
+		if err := rows.Scan(&atMS, &m.PID, &createdMS, &m.Name, &m.CPUSeconds, &m.RSSBytes,
+			&m.Traffic.InBytes, &m.Traffic.OutBytes); err != nil {
 			return nil, err
 		}
 		m.At = time.UnixMilli(atMS)

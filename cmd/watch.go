@@ -267,6 +267,17 @@ func runWatchDaemon(cmd *cobra.Command, _ []string) error {
 		collector.Report = func(line string) { fmt.Fprintln(out, line) }
 	}
 
+	// Traffic is measured by a child process held for the collector's whole
+	// life, because a freshly started one cannot see connections that already
+	// existed — which for a watched server is all of them (ADR-0012). Failing
+	// to start it costs the traffic column and nothing else.
+	if source, err := watch.StartTrafficSource(); err != nil {
+		fmt.Fprintf(out, "traffic not being measured: %v\n", err)
+	} else {
+		collector.Traffic = source
+		defer source.Close()
+	}
+
 	// Interrupt cancels the context, so the run stops between ticks and never
 	// mid-write. Stopping the notifier restores default signal handling, so a
 	// second interrupt still kills a wedged process.

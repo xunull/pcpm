@@ -14,7 +14,7 @@ import (
 // schemaVersion is the shape of the database this build expects. Every release
 // that changes the schema raises it and adds the corresponding migration, so an
 // older database is upgraded in place rather than being silently misread.
-const schemaVersion = 7
+const schemaVersion = 9
 
 // migrations[i] takes the database from version i to version i+1. They run in
 // order inside one transaction, so a failure leaves the version untouched.
@@ -92,6 +92,16 @@ var migrations = []string{
 	// the whole tool is for (ADR-0010).
 	`ALTER TABLE rollup ADD COLUMN cpu_max REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE rollup ADD COLUMN rss_max INTEGER NOT NULL DEFAULT 0`,
+
+	// 7 -> 9: Traffic. Cumulative counters like cpu_seconds, not rates
+	// (ADR-0008), though this counter belongs to pcpm's reading of the machine
+	// rather than to the process: it starts at zero when the collector starts,
+	// so a period when the collector was not running is not merely unsampled
+	// but unknowable (ADR-0012). Existing rows default to zero, which is
+	// indistinguishable from "no traffic" — acceptable only because it is also
+	// true of them: nothing was measuring it.
+	`ALTER TABLE sample ADD COLUMN net_in_bytes INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE sample ADD COLUMN net_out_bytes INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is pcpm's local database. One file holds every tool's data, so a
