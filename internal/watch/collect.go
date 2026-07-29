@@ -86,6 +86,11 @@ type Collector struct {
 	RawRetention        time.Duration
 	RollupRetention     time.Duration
 
+	// Traffic supplies per-process byte counters. It is optional: a platform
+	// with no unprivileged source, or a source that has failed, leaves it nil
+	// and every other measurement carries on unaffected.
+	Traffic TrafficSource
+
 	// Now is the clock, injectable so tests need not sleep.
 	Now func() time.Time
 	// Report receives one line per tick. nil discards them.
@@ -98,6 +103,11 @@ type Collector struct {
 	// the identity of the process it describes, which is only known here.
 	members       map[int64][]proc.Process
 	lastDiscovery time.Time
+
+	// trafficReported keeps the traffic source's failure from being repeated
+	// on every tick. It is said once, loudly, rather than becoming noise that
+	// scrolls past.
+	trafficReported bool
 }
 
 func NewCollector(store *Store, machine Machine) *Collector {
@@ -137,9 +147,14 @@ func (c *Collector) Tick() error {
 		c.lastDiscovery = now
 	}
 
+	// One reading for the whole machine, not one per tree member: the source
+	// reports every process together, and asking it repeatedly would re-copy
+	// the same map for each process being watched.
+	traffic, trafficWorking := c.trafficSnapshot()
+
 	sampled, ended := 0, 0
 	for _, t := range targets {
-		result := c.sampleTarget(t, now)
+		result := c.sampleTarget(t, now, traffic, trafficWorking)
 		if result.alive == 0 {
 			// Every process in the tree is gone. Record when, and stop
 			// measuring it; what it did beforehand stays.
@@ -253,7 +268,25 @@ func survivors(known []proc.Process, ix proc.Index) []proc.Process {
 }
 
 // sampleTarget measures every process still in a target's tree.
-func (c *Collector) sampleTarget(t Target, now time.Time) sampleResult {
+// trafficSnapshot reads the current counters, or nothing when there is no
+// working source. A nil map reads as zero for every process, which is why the
+// distinction between "no traffic" and "no measurement" has to be carried
+// elsewhere rather than inferred from the figures.
+func (c *Collector) trafficSnapshot() (map[int32]Traffic, bool) {
+	if c.Traffic == nil {
+		return nil, false
+	}
+	if err := c.Traffic.Err(); err != nil {
+		if !c.trafficReported {
+			c.trafficReported = true
+			c.report(fmt.Sprintf("traffic is no longer being measured: %v", err))
+		}
+		return nil, false
+	}
+	return c.Traffic.Snapshot(), true
+}
+
+func (c *Collector) sampleTarget(t Target, now time.Time, traffic map[int32]Traffic, trafficWorking bool) sampleResult {
 	members := c.members[t.ID]
 	if len(members) == 0 {
 		return sampleResult{}
@@ -268,11 +301,13 @@ func (c *Collector) sampleTarget(t Target, now time.Time) sampleResult {
 			continue
 		}
 		samples = append(samples, Sample{
-			PID:        member.PID,
-			Created:    member.Created,
-			Name:       member.Name,
-			CPUSeconds: usage.CPUSeconds,
-			RSSBytes:   usage.RSSBytes,
+			PID:             member.PID,
+			Created:         member.Created,
+			Name:            member.Name,
+			CPUSeconds:      usage.CPUSeconds,
+			RSSBytes:        usage.RSSBytes,
+			Traffic:         traffic[member.PID],
+			TrafficMeasured: trafficWorking,
 		})
 	}
 	if len(samples) == 0 {

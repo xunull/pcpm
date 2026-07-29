@@ -90,6 +90,7 @@ func init() {
 	watchDaemonCmd.Flags().Duration("discover-interval", 0,
 		"how often to re-walk the process table for tree members (default: 30s)")
 	watchDaemonCmd.Flags().Bool("quiet", false, "do not report each tick")
+	watchDaemonCmd.Flags().Bool("network", true, "measure traffic (macOS only)")
 	watchDaemonCmd.Flags().Bool("stop", false, "stop a background collector instead of running one")
 	watchAddCmd.Flags().Bool("no-daemon", false, "do not start the collector if it is not running")
 
@@ -265,6 +266,23 @@ func runWatchDaemon(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	if quiet, _ := cmd.Flags().GetBool("quiet"); !quiet {
 		collector.Report = func(line string) { fmt.Fprintln(out, line) }
+	}
+
+	// Traffic is measured by a child process held for the collector's whole
+	// life, because a freshly started one cannot see connections that already
+	// existed — which for a watched server is all of them (ADR-0012). Failing
+	// to start it costs the traffic column and nothing else.
+	network := cfg.Watch.Network
+	if cmd.Flags().Changed("network") {
+		network, _ = cmd.Flags().GetBool("network")
+	}
+	if !network {
+		fmt.Fprintln(out, "traffic not being measured: turned off in configuration")
+	} else if source, err := watch.StartTrafficSource(); err != nil {
+		fmt.Fprintf(out, "traffic not being measured: %v\n", err)
+	} else {
+		collector.Traffic = source
+		defer source.Close()
 	}
 
 	// Interrupt cancels the context, so the run stops between ticks and never

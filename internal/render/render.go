@@ -99,6 +99,37 @@ func encodeJSON(v any) (string, error) {
 	return b.String(), nil
 }
 
+// TrafficLine renders a window's traffic totals, and what they cover.
+//
+// The coverage is not decoration. The counter behind these figures starts again
+// whenever the collector does, so a window containing a restart reports less
+// than moved — and a total shown without saying how much of its window it
+// accounts for will be read as complete and acted on (ADR-0012).
+func TrafficLine(sum watch.Summary) string {
+	// Nothing stood behind the figures. Printing "0 B" here would be a
+	// confident statement that nothing moved, which is the one outcome this
+	// whole design set out to avoid: a zero and an absence look identical in a
+	// chart, and the reader believes the zero.
+	if !sum.TrafficWasMeasured() {
+		return "not measured"
+	}
+	line := fmt.Sprintf("↓ %-11s ↑ %s", Bytes(sum.Traffic.InBytes), Bytes(sum.Traffic.OutBytes))
+	if !sum.TrafficFullyCovered() {
+		line += fmt.Sprintf("   (covering %s of %s)",
+			roundDuration(sum.TrafficCovered), roundDuration(sum.Window))
+	}
+	return line
+}
+
+// roundDuration trims a duration to something a person reads at a glance; the
+// exact seconds of a coverage figure say nothing the minutes do not.
+func roundDuration(d time.Duration) time.Duration {
+	if d >= time.Hour {
+		return d.Round(time.Minute)
+	}
+	return d.Round(time.Second)
+}
+
 // jsonForgotten is the machine-readable view of a forgotten process tree: every
 // field, none truncated, plus the tree's size and ports. CreateTime is RFC 3339,
 // or empty when the process start time is unknown.
@@ -354,7 +385,8 @@ func WatchSummaryText(s watch.Status, sum watch.Summary, window time.Duration, n
 	fmt.Fprintf(&b, "window   last %-14s samples %d over %s\n",
 		window, sum.Samples, Age(sum.Last, sum.First))
 	fmt.Fprintf(&b, "cpu      %-14s peak %s\n", Percent(sum.CurrentCPUPercent), Percent(sum.PeakCPUPercent))
-	fmt.Fprintf(&b, "memory   %-14s peak %s\n\n", Bytes(sum.CurrentRSSBytes), Bytes(sum.PeakRSSBytes))
+	fmt.Fprintf(&b, "memory   %-14s peak %s\n", Bytes(sum.CurrentRSSBytes), Bytes(sum.PeakRSSBytes))
+	fmt.Fprintf(&b, "network  %s\n\n", TrafficLine(sum))
 
 	rows := make([][]string, len(sum.Processes))
 	for i, p := range sum.Processes {
@@ -401,6 +433,10 @@ func WatchSummaryJSON(s watch.Status, sum watch.Summary, window time.Duration) (
 		PeakCPU    float64            `json:"peak_cpu_percent"`
 		RSSBytes   int64              `json:"rss_bytes"`
 		PeakRSS    int64              `json:"peak_rss_bytes"`
+		NetIn      int64              `json:"net_in_bytes"`
+		NetOut     int64              `json:"net_out_bytes"`
+		CoveredSec float64            `json:"covered_seconds"`
+		NetCovered float64            `json:"net_covered_seconds"`
 		Processes  []jsonProcessUsage `json:"processes"`
 	}{
 		Target:     watchTargetView(s),
@@ -410,6 +446,10 @@ func WatchSummaryJSON(s watch.Status, sum watch.Summary, window time.Duration) (
 		PeakCPU:    sum.PeakCPUPercent,
 		RSSBytes:   sum.CurrentRSSBytes,
 		PeakRSS:    sum.PeakRSSBytes,
+		NetIn:      sum.Traffic.InBytes,
+		NetOut:     sum.Traffic.OutBytes,
+		CoveredSec: sum.Covered.Seconds(),
+		NetCovered: sum.TrafficCovered.Seconds(),
 		Processes:  make([]jsonProcessUsage, len(sum.Processes)),
 	}
 	if !sum.First.IsZero() {

@@ -77,15 +77,18 @@ func (s *Store) rollupRange(from, cutoff time.Time, bucket time.Duration) (int, 
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO rollup (target_id, at, bucket_ms, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO rollup (target_id, at, bucket_ms, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max, net_in_bytes, net_out_bytes, net_span_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (target_id, at, bucket_ms, pid) DO UPDATE SET
-		   cpu_seconds = excluded.cpu_seconds,
-		   rss_bytes   = excluded.rss_bytes,
-		   span_ms     = excluded.span_ms,
-		   cpu_max     = excluded.cpu_max,
-		   rss_max     = excluded.rss_max,
-		   name        = excluded.name`)
+		   cpu_seconds   = excluded.cpu_seconds,
+		   rss_bytes     = excluded.rss_bytes,
+		   span_ms       = excluded.span_ms,
+		   cpu_max       = excluded.cpu_max,
+		   rss_max       = excluded.rss_max,
+		   net_in_bytes  = excluded.net_in_bytes,
+		   net_out_bytes = excluded.net_out_bytes,
+		   net_span_ms   = excluded.net_span_ms,
+		   name          = excluded.name`)
 	if err != nil {
 		return 0, err
 	}
@@ -102,7 +105,8 @@ func (s *Store) rollupRange(from, cutoff time.Time, bucket time.Duration) (int, 
 		for _, agg := range aggregate(cpuDeltas(samples), from, cutoff, bucket) {
 			if _, err := stmt.Exec(t.ID, agg.at.UnixMilli(), bucket.Milliseconds(),
 				agg.pid, agg.name, agg.cpuSeconds, agg.rssBytes, agg.span.Milliseconds(),
-				agg.peak, agg.peakRSS); err != nil {
+				agg.peak, agg.peakRSS, agg.traffic.InBytes, agg.traffic.OutBytes,
+				agg.trafficSpan.Milliseconds()); err != nil {
 				return 0, err
 			}
 			written++
@@ -126,12 +130,14 @@ func (s *Store) markRolledUpTo(at time.Time) error {
 
 // bucketed is one process's usage within one bucket, ready to store.
 type bucketed struct {
-	at         time.Time
-	pid        int32
-	name       string
-	cpuSeconds float64
-	rssBytes   int64
-	span       time.Duration
+	at          time.Time
+	pid         int32
+	name        string
+	cpuSeconds  float64
+	rssBytes    int64
+	traffic     Traffic
+	trafficSpan time.Duration
+	span        time.Duration
 	// peak is the highest rate any interval inside this bucket reached. It is
 	// stored because the mean alone cannot be un-averaged later.
 	peak    float64
@@ -158,6 +164,10 @@ func aggregate(deltas []delta, from, to time.Time, bucket time.Duration) []bucke
 			acc[k] = b
 		}
 		b.cpuSeconds += d.cpuSeconds
+		b.traffic = b.traffic.Add(d.traffic)
+		if d.trafficMeasured {
+			b.trafficSpan += d.span
+		}
 		b.span += d.span
 		b.rssBytes = d.rss // the bucket's latest sample
 		if d.span > 0 {
@@ -191,11 +201,13 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 	for rows.Next() {
 		var (
 			atMS, spanMS, rss, rssMax int64
+			netIn, netOut, netSpanMS  int64
 			pid                       int32
 			name                      string
 			cpuSeconds, cpuMax        float64
 		)
-		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax); err != nil {
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax,
+			&netIn, &netOut, &netSpanMS); err != nil {
 			return nil, err
 		}
 		key := bucketKey{at: atMS / bucket.Milliseconds(), pid: pid}
@@ -205,6 +217,8 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 			acc[key] = sh
 		}
 		sh.cpuSeconds += cpuSeconds
+		sh.traffic = sh.traffic.Add(Traffic{InBytes: netIn, OutBytes: netOut})
+		sh.trafficSpan += time.Duration(netSpanMS) * time.Millisecond
 		sh.span += time.Duration(spanMS) * time.Millisecond
 		sh.rss = rss
 		// Peaks survive re-aggregation by being carried, never averaged.
@@ -224,7 +238,7 @@ func (s *Store) RolledSeries(targetID int64, from, to time.Time, bucket time.Dur
 // period once per resolution.
 func (s *Store) rolledRows(targetID int64, from, to time.Time) (*sql.Rows, error) {
 	return s.db.Query(
-		`SELECT at, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max
+		`SELECT at, pid, name, cpu_seconds, rss_bytes, span_ms, cpu_max, rss_max, net_in_bytes, net_out_bytes, net_span_ms
 		 FROM rollup
 		 WHERE target_id = ? AND bucket_ms = ? AND at >= ? AND at < ?
 		 ORDER BY at`,
@@ -250,11 +264,13 @@ func (s *Store) rolledBreakdown(targetID int64, from, to time.Time, bucket time.
 	for rows.Next() {
 		var (
 			atMS, spanMS, rss, rssMax int64
+			netIn, netOut, netSpanMS  int64
 			pid                       int32
 			name                      string
 			cpuSeconds, cpuMax        float64
 		)
-		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax); err != nil {
+		if err := rows.Scan(&atMS, &pid, &name, &cpuSeconds, &rss, &spanMS, &cpuMax, &rssMax,
+			&netIn, &netOut, &netSpanMS); err != nil {
 			return nil, err
 		}
 		_, _ = cpuMax, rssMax

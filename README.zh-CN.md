@@ -20,7 +20,7 @@
 - [`pcpm forgotten`](#pcpm-forgotten) —— 以及[它凭什么准](#forgotten-凭什么准)
 - [`pcpm ports`](#pcpm-ports)
 - [`pcpm top`](#pcpm-top) —— 以及[它看不到什么](#top-看不到什么)
-- [`pcpm watch`](#pcpm-watch)
+- [`pcpm watch`](#pcpm-watch) —— 以及[流量](#流量)
 - [安装](#安装)
 - [配置](#配置)
 - [已知局限](#已知局限)
@@ -244,6 +244,24 @@ MEMORY   now 1.0 GB   peak 1.0 GB
 - **`tab` 在进程列表里移动。** 选中某个进程后,图表只画那一个进程 —— 这正是区分"忙的是包装器还是干活的"的办法。`tab` 走过最后一项回到整棵树。
 - **时间窗口固定** —— `5m`、`1h`、`24h`、`7d`,不支持缩放和平移。
 
+### 流量
+
+在 macOS 上,`watch` 还会记录目标收发了多少:
+
+```console
+$ pcpm watch show 57731 --window 1m
+window   last 1m0s           samples 9 over 40s
+cpu      0.1%           peak 0.2%
+memory   31 MB          peak 31 MB
+network  ↓ 205 MB      ↑ 0 B   (covering 40s of 1m0s)
+```
+
+**括号里那句才是重点。** 这些字节背后的计数器属于 pcpm 对机器的观测,而不属于进程 —— 采集器每次启动它都从零开始。所以总量的可信度,取决于它的时间窗口里有多少是真被测到的,而它会把这个比例说出来。CPU 没有这个问题:那个计数器属于进程,重启也还在。
+
+如果当时**根本没在测** —— 源挂了,或者你关掉了 —— 这一行显示的是 `not measured` 而不是 `↓ 0 B`。源失败和进程空闲在数据库里存的是同一个零,所以"当时到底有没有在测"是单独记下来的。
+
+不想让采集器常驻一个子进程的话,在 `watch:` 下写 `network: false` 关掉。
+
 ### 存什么、存多久
 
 pcpm 记录的是每个进程的**累计 CPU 时间**,不是百分比,在你查询时才换算成速率。这正是空洞能被诚实处理的原因:60 秒内消耗了 6 CPU 秒,报出来是 10%,而在采集时就算好百分比会记成一个 120% 的假尖峰。同时也意味着**平均窗口是在你查看时决定的,而不是写入时**。
@@ -302,6 +320,7 @@ watch:
   rollup_interval: 1m       # 降采样的桶大小
   raw_retention: 48h        # 全分辨率原始数据保留多久
   rollup_retention: 720h    # 降采样数据保留多久(30 天)
+  network: true             # 是否采集流量(仅 macOS;会常驻一个子进程)
 
 top:
   interval: 1s              # 既是刷新周期,也是每个数字的平均窗口
@@ -324,7 +343,9 @@ top:
 - **降噪规则是启发式的。** 两个条件的判据是原理性的;而系统路径 / `.app` 助手 / shell 这几份排除清单可能需要随环境增补。
 - **PID 复用会导致 `forgotten` 漏报。** `PGID` 本身就是一个 PID 值,如果那个已死组长的号被一个毫不相关的新进程复用,这一条就会被漏掉。方向是漏报,不会产生误报。`watch` 不受影响 —— 监控目标同时用启动时间和 PID 双重锁定。
 - **`watch` 会漏掉极短命的子进程。** 在两次树发现之间生灭的进程不会被采到。在意的话把 `discover_interval` 调小。
-- **`watch` 尚未采集网络流量** —— 目前只有 CPU 与内存。按进程统计网络字节没有可移植的数据源:macOS 可以通过 `nettop` 拿到,Linux 上没有免 root 的等价物。
+- **`watch` 的流量仅限 macOS,且约低估 5–10%。** 实测每秒 18–19 MiB,实际 20 MiB/s —— 一致、可预期,但一致地偏低。
+- **采集器没在运行时流经的流量,无从得知。** 不是估不准,是没有任何地方存着:这个计数器属于 pcpm 对机器的观测,而不属于进程,采集器每次启动它都从零开始。CPU 时间能扛过重启,是因为那个计数器属于进程。这正是为什么流量总量永远和"覆盖了多长时间"一起显示。
+- **Linux 上不采集流量。** 这不是遗漏而是平台差异:macOS 提供了一个免特权可读的内核统计通道(`nettop` 读的就是它),Linux 没有对应物 —— 那边所有能做这件事的工具(nethogs、bandwhich、netdata)都需要 `CAP_NET_RAW` 或 root。见 [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md)。
 - **不加 `sudo` 时,`top` 只看得到约 70–85% 的忙碌 CPU**,且永远看不到 `kernel_task`。其他用户的进程会返回 0 而不是报错,因此它们被排除在外,而不是以 0 参与排序;缺口大小由表头给出。见 [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md)。
 - **`top` 的 `APP` 列仅限 macOS。** 它取自可执行文件路径中的 `.app` bundle,Linux 上没有对应物,该列在那里直接不显示。
 - **仅 Linux 与 macOS。** Windows 没有进程组;容器有独立的 PID 命名空间,所以 pcpm 应在宿主机上运行。
@@ -338,6 +359,7 @@ top:
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) —— Sample 为何存累计计数器而非百分比
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) —— 采集器为何是「单守护进程 + 以数据库为控制面」
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) —— `top` 为何只排它能真正测准的进程
+  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — 流量为何取自长驻 `nettop` 而不是那个私有框架
 - [`CONTEXT.md`](CONTEXT.md) —— 项目术语表
 
 ## 许可证

@@ -249,6 +249,14 @@ func (m Model) View() string {
 		Palette: m.palette,
 	}))
 	b.WriteString("\n")
+	bucket := bucketFor(w.Span, chartWidth)
+	b.WriteString(render.Chart(points, render.TrafficSeries(bucket), render.ChartOptions{
+		Width: chartWidth, Height: chartHeight, From: from, To: to,
+		Title:   "NETWORK  " + render.TrafficLine(m.summary),
+		Label:   func(v float64) string { return render.Bytes(int64(v)) + "/s" },
+		Palette: m.palette,
+	}))
+	b.WriteString("\n")
 	b.WriteString(m.processes())
 	b.WriteString("\n")
 	b.WriteString(m.footer())
@@ -380,9 +388,9 @@ func (m Model) chartWidth() int { return max(m.width, 24) }
 // chartHeight divides what is left after the fixed furniture between the two
 // charts, so a short terminal still shows both.
 func (m Model) chartHeight() int {
-	const furniture = 14 // header, titles, axes, time labels, process list header, footer
-	h := (m.height - furniture - m.processRows()) / 2
-	return max(min(h, 14), 3)
+	const furniture = 17 // header, three titles, axes, time labels, process list header, footer
+	h := (m.height - furniture - m.processRows()) / 3
+	return max(min(h, 12), 3)
 }
 
 // processRows is how many processes the list may show.

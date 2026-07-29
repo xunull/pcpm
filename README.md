@@ -20,7 +20,7 @@ Three tools, all read-only:
 - [`pcpm forgotten`](#pcpm-forgotten) — and [why it is accurate](#why-forgotten-is-accurate)
 - [`pcpm ports`](#pcpm-ports)
 - [`pcpm top`](#pcpm-top) — and [what it cannot see](#what-top-cannot-see)
-- [`pcpm watch`](#pcpm-watch)
+- [`pcpm watch`](#pcpm-watch) — and [traffic](#traffic)
 - [Install](#install)
 - [Configuration](#configuration)
 - [Known limitations](#known-limitations)
@@ -244,6 +244,24 @@ Piped or redirected output prints a text summary instead of control codes; `--pl
 - **`tab` walks the process list.** With a process selected the charts show that process alone, which is how you tell a busy wrapper from a busy worker. `tab` past the end returns to the whole tree.
 - **Time windows are fixed** — `5m`, `1h`, `24h`, `7d`. There is no zoom or pan.
 
+### Traffic
+
+`watch` also records what a target sends and receives, on macOS:
+
+```console
+$ pcpm watch show 57731 --window 1m
+window   last 1m0s           samples 9 over 40s
+cpu      0.1%           peak 0.2%
+memory   31 MB          peak 31 MB
+network  ↓ 205 MB      ↑ 0 B   (covering 40s of 1m0s)
+```
+
+That parenthesis is the point. The counter behind these bytes belongs to pcpm's reading of the machine rather than to the process, and starts again from zero whenever the collector does — so a total is only as good as the fraction of its window that was actually measured, and it says which fraction that was. CPU has no such caveat: its counter belongs to the process and survives a restart.
+
+If nothing was measuring — the source failed, or you turned it off — the line reads `not measured` rather than `↓ 0 B`. A failed source and an idle process store the same zero, so which it was is recorded alongside it.
+
+Turn it off with `network: false` under `watch:` if you would rather the collector did not hold a child process.
+
 ### What is stored, and for how long
 
 pcpm records each process's **cumulative CPU time**, not a percentage, and works out rates when you ask. That is what makes a gap honest: 60 seconds during which 6 CPU-seconds were used reports 10%, where a percentage computed at collection time would have recorded a 120% spike. It also means the averaging window is chosen when you look, not when the data was written.
@@ -303,6 +321,7 @@ watch:
   rollup_interval: 1m       # the summarised bucket size
   raw_retention: 48h        # how long full-resolution samples are kept
   rollup_retention: 720h    # how long summaries are kept (30 days)
+  network: true             # measure traffic (macOS only; holds a child process)
 
 top:
   interval: 1s              # both the refresh period and the window each figure averages
@@ -325,7 +344,9 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
 - **The noise filters are heuristics.** The two-condition rule is principled; the system-path/app-bundle/shell exclusions are lists that may need to grow.
 - **PID reuse can hide a `forgotten` finding.** `PGID` is itself a PID value, so if the dead leader's number is recycled by an unrelated new process, that finding is missed. This under-reports; it never produces a false positive. `watch` is unaffected — a target is pinned by its start time as well as its PID.
 - **`watch` misses very short-lived children.** A process that starts and exits between two discovery passes is never sampled. Lower `discover_interval` if that matters.
-- **`watch` does not record network traffic yet** — only CPU and memory. Per-process network bytes have no portable source: macOS can supply them through `nettop`, Linux has no unprivileged equivalent.
+- **`watch` records traffic on macOS only, and about 5–10% low.** Measured at 18–19 MiB/s against 20 MiB/s actual — consistent, but consistently under.
+- **Traffic moved while the collector was not running is unknowable.** Not estimated, not interpolated: the counter behind it belongs to pcpm's reading of the machine rather than to the process, and starts again from zero whenever the collector does. CPU time survives a restart because that counter belongs to the process. This is why a traffic total is always shown with how much of its window it covers.
+- **Linux records no traffic.** Not an omission but a platform difference: macOS exposes a kernel statistics channel that `nettop` reads without privilege, and Linux has no equivalent — every tool that does this there (nethogs, bandwhich, netdata) needs `CAP_NET_RAW` or root. See [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md).
 - **`top` sees roughly 70–85% of busy CPU without `sudo`,** and never `kernel_task`. Other users' processes report zero rather than erroring, so they are excluded rather than ranked at zero; the header states the size of the gap. See [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md).
 - **`top`'s `APP` column is macOS-only.** It comes from the `.app` bundle in the executable's path, which has no Linux equivalent; the column is simply absent there.
 - **Linux and macOS only.** Windows has no process groups; containers have their own PID namespace, so run pcpm on the host.
@@ -339,6 +360,7 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) — why samples store cumulative CPU rather than a percentage
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) — why the collector is one daemon controlled through the database
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) — why `top` ranks only what it can actually measure
+  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — why traffic comes from a long-lived `nettop` rather than the framework
 - [`CONTEXT.md`](CONTEXT.md) — the project's glossary
 
 ## License

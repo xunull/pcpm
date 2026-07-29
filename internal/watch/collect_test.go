@@ -1,6 +1,8 @@
 package watch
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +268,139 @@ func TestAReusedPIDIsNotSampledForTheOldTarget(t *testing.T) {
 	targets, _ := s.Targets()
 	if !targets[0].Ended() {
 		t.Error("the original process is gone, so its target should be ended")
+	}
+}
+
+// stubTraffic stands in for the measuring child process.
+type stubTraffic struct {
+	counters map[int32]Traffic
+	err      error
+}
+
+func (s stubTraffic) Snapshot() map[int32]Traffic { return s.counters }
+func (s stubTraffic) Err() error                  { return s.err }
+func (s stubTraffic) Close() error                { return nil }
+
+// Traffic arrives for the whole machine at once, and each tree member's figure
+// is looked up in it rather than measured separately.
+func TestSamplesCarryTrafficForEachProcess(t *testing.T) {
+	started := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	m := &fakeMachine{
+		procs: []proc.Process{
+			{PID: 100, PPID: 1, Created: started},
+			{PID: 101, PPID: 100, Created: started},
+		},
+		cpu: map[int32]float64{100: 1, 101: 2},
+	}
+	c, s, clock := collector(t, m)
+	tgt, _ := s.AddTarget(Target{PID: 100, Created: started, Name: "bun"}, *clock)
+	c.Traffic = stubTraffic{counters: map[int32]Traffic{
+		100: {InBytes: 500, OutBytes: 60},
+		101: {InBytes: 900, OutBytes: 10},
+	}}
+
+	if err := c.Tick(); err != nil {
+		t.Fatal(err)
+	}
+
+	samples, err := s.SamplesBetween(tgt.ID, clock.Add(-time.Hour), clock.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int32]Traffic{}
+	for _, sm := range samples {
+		got[sm.PID] = sm.Traffic
+	}
+	if got[100] != (Traffic{InBytes: 500, OutBytes: 60}) {
+		t.Errorf("pid 100 traffic = %+v", got[100])
+	}
+	if got[101] != (Traffic{InBytes: 900, OutBytes: 10}) {
+		t.Errorf("pid 101 traffic = %+v", got[101])
+	}
+}
+
+// A broken source must not stop CPU and memory being collected — losing one
+// measurement is not a reason to lose the others.
+func TestAFailedTrafficSourceDoesNotStopTheRest(t *testing.T) {
+	started := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	m := &fakeMachine{
+		procs: []proc.Process{{PID: 100, PPID: 1, Created: started}},
+		cpu:   map[int32]float64{100: 7},
+	}
+	c, s, clock := collector(t, m)
+	tgt, _ := s.AddTarget(Target{PID: 100, Created: started, Name: "bun"}, *clock)
+	c.Traffic = stubTraffic{
+		counters: map[int32]Traffic{100: {InBytes: 999}},
+		err:      errors.New("the traffic source stopped reporting"),
+	}
+
+	if err := c.Tick(); err != nil {
+		t.Fatal(err)
+	}
+
+	samples, err := s.SamplesBetween(tgt.ID, clock.Add(-time.Hour), clock.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("want 1 sample, got %d", len(samples))
+	}
+	if samples[0].CPUSeconds != 7 {
+		t.Errorf("cpu was lost along with the traffic source: %+v", samples[0])
+	}
+	// Figures from a source known to be broken must not be stored as if real.
+	if samples[0].Traffic != (Traffic{}) {
+		t.Errorf("traffic from a failed source was stored: %+v", samples[0].Traffic)
+	}
+}
+
+// No source at all is the Linux case, and it must be unremarkable.
+func TestCollectionWorksWithNoTrafficSource(t *testing.T) {
+	started := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	m := &fakeMachine{
+		procs: []proc.Process{{PID: 100, PPID: 1, Created: started}},
+		cpu:   map[int32]float64{100: 3},
+	}
+	c, s, clock := collector(t, m)
+	if _, err := s.AddTarget(Target{PID: 100, Created: started, Name: "bun"}, *clock); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Tick(); err != nil {
+		t.Fatalf("a collector with no traffic source should work: %v", err)
+	}
+}
+
+// A source that has been given up on must be announced — but once. Repeating it
+// every tick turns the one line that matters into scrolling noise.
+func TestALostTrafficSourceIsAnnouncedOnce(t *testing.T) {
+	started := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	m := &fakeMachine{
+		procs: []proc.Process{{PID: 100, PPID: 1, Created: started}},
+		cpu:   map[int32]float64{100: 1},
+	}
+	c, s, clock := collector(t, m)
+	if _, err := s.AddTarget(Target{PID: 100, Created: started, Name: "bun"}, *clock); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	c.Report = func(l string) { lines = append(lines, l) }
+	c.Traffic = stubTraffic{err: errors.New("gave up after 3 restarts")}
+
+	for range 3 {
+		if err := c.Tick(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	said := 0
+	for _, l := range lines {
+		if strings.Contains(l, "traffic is no longer being measured") {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Errorf("the traffic failure was reported %d times, want exactly 1:\n%s",
+			said, strings.Join(lines, "\n"))
 	}
 }

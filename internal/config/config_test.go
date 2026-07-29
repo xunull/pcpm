@@ -141,3 +141,30 @@ func TestBadTopSettingsFailByName(t *testing.T) {
 		})
 	}
 }
+
+// A measurement that must be found in a config file before it does anything is
+// a measurement nobody has.
+func TestTrafficCollectionIsOnByDefault(t *testing.T) {
+	cfg, err := Load(nil, filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Watch.Network {
+		t.Error("traffic collection should be on unless turned off")
+	}
+}
+
+func TestTrafficCollectionCanBeTurnedOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("watch:\n  network: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(nil, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Watch.Network {
+		t.Error("network: false was ignored")
+	}
+}

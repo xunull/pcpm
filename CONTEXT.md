@@ -36,6 +36,14 @@ _Avoid_: monitor, subscription, job
 One measurement of one process at one instant — never of a whole tree. Figures for a tree are always derived from the samples beneath it, so that "which process was responsible" stays answerable after the fact.
 _Avoid_: data point, metric, reading, snapshot
 
+**Traffic**:
+The bytes a process has sent and received. Unlike CPU time, this is counted only while pcpm is watching: the counter behind it belongs to pcpm's reading of the machine rather than to the process, and starts again from zero whenever the collector does. Traffic that moved while the collector was not running is therefore not merely unsampled but **unknowable** — there is nowhere it was recorded.
+_Avoid_: bandwidth, network usage, throughput, data transferred
+
+**Coverage**:
+How much of a window the stored Samples actually account for. It exists because a total needs it to mean anything: a figure covering twenty-two of twenty-four hours and one covering all of them look identical, and a reader shown only the number will treat it as complete.
+_Avoid_: uptime, completeness, availability, data quality
+
 ## Ranking what is busy
 
 **Unattributed CPU**:
