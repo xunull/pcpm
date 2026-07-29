@@ -67,15 +67,7 @@ func ShortPath(path, home string, maxLen int) string {
 	if path == "" {
 		return ""
 	}
-	if home = strings.TrimSuffix(home, "/"); home != "" {
-		// Match on a path boundary, so /Users/melissa is not read as ~lissa.
-		switch {
-		case path == home:
-			path = "~"
-		case strings.HasPrefix(path, home+"/"):
-			path = "~" + strings.TrimPrefix(path, home)
-		}
-	}
+	path = underHome(path, home)
 	if displayWidth(path) <= maxLen {
 		return path
 	}
@@ -84,6 +76,94 @@ func ShortPath(path, home string, maxLen int) string {
 		return path
 	}
 	return ellipsis + "/" + strings.Join(segments[len(segments)-2:], "/")
+}
+
+// underHome writes a path relative to home as "~".
+func underHome(path, home string) string {
+	if home = strings.TrimSuffix(home, "/"); home == "" {
+		return path
+	}
+	// Match on a path boundary, so /Users/melissa is not read as ~lissa.
+	switch {
+	case path == home:
+		return "~"
+	case strings.HasPrefix(path, home+"/"):
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
+
+// ShortPathAround renders a path for display like ShortPath, except that it
+// keeps the segment holding match visible.
+//
+// A Focus matches the whole Launch Directory, but the column shows only the end
+// of it, so focusing on "xunull-repository" kept rows whose visible directory
+// read "…/open-source/pcpm" — with not one of those characters in it. The
+// reader was left looking at a row with no visible reason to be there, and deep
+// paths are exactly where a Focus earns its keep.
+//
+// Colouring the match was the other way to answer this, and was rejected: the
+// table measures its columns in terminal widths, and runewidth counts the
+// visible letters of an escape sequence, so "\x1b[31mpcpm\x1b[0m" measures 11
+// columns instead of 4. Making the grid escape-aware would put a fourth notion
+// of length into a layout every command shares, to answer a question that
+// choosing which segment to show answers just as well.
+//
+// An empty match, or one no single segment holds, is the ordinary collapse.
+func ShortPathAround(path, home string, maxLen int, match string) string {
+	short := ShortPath(path, home, maxLen)
+	if match == "" || short == underHome(path, home) {
+		return short // nothing was collapsed, so nothing was hidden
+	}
+	// Split the path as it stood before the collapse. Splitting what the
+	// collapse returned would search the two segments it happened to keep,
+	// which are precisely the ones that do not need finding.
+	segments := strings.Split(strings.Trim(underHome(path, home), "/"), "/")
+	found := -1
+	for i, s := range segments {
+		if strings.Contains(strings.ToLower(s), strings.ToLower(match)) {
+			found = i
+			break
+		}
+	}
+	// The last two segments are what the ordinary collapse already keeps, so a
+	// match among them needs nothing done. A match no segment holds — a term
+	// that spans a separator — cannot be located, and pretending otherwise
+	// would be worse than the tail.
+	if found < 0 || found >= len(segments)-2 {
+		return short
+	}
+
+	around := ellipsis + "/" + segments[found] + "/" + ellipsis + "/" + segments[len(segments)-1]
+	if displayWidth(around) <= maxLen {
+		return around
+	}
+	// The matched segment alone is too wide to sit beside the tail. Keep the
+	// reason the row is on screen and let the end of the path go: a reader who
+	// can see neither has nothing at all.
+	prefix := ellipsis + "/"
+	return prefix + keepMatch(segments[found], match, maxLen-displayWidth(prefix))
+}
+
+// keepMatch trims one path segment to width, keeping the text that matched
+// inside it.
+//
+// An ordinary truncation keeps the head, which is wrong here: the match can sit
+// at the far end of a long segment — a build directory ending in the name being
+// looked for — and cutting it off removes the only thing this collapse exists to
+// show.
+func keepMatch(segment, match string, width int) string {
+	if displayWidth(segment) <= width {
+		return segment
+	}
+	at := strings.Index(strings.ToLower(segment), strings.ToLower(match))
+	// Either there is no match to protect, or everything up to the end of it
+	// fits anyway, in which case keeping the head keeps the match too.
+	if at < 0 || displayWidth(segment[:at+len(match)]) <= width {
+		return truncate(segment, width)
+	}
+	// It does not fit, so give up the start of the segment rather than the match.
+	return ellipsis + headColumns(segment[at:], width-displayWidth(ellipsis))
 }
 
 // encodeJSON marshals v as an indented JSON document. HTML escaping is off so

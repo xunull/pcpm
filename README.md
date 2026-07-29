@@ -19,7 +19,7 @@ Three tools, all read-only:
 
 - [`pcpm forgotten`](#pcpm-forgotten) — and [why it is accurate](#why-forgotten-is-accurate)
 - [`pcpm ports`](#pcpm-ports)
-- [`pcpm top`](#pcpm-top) — and [what it cannot see](#what-top-cannot-see)
+- [`pcpm top`](#pcpm-top) — [narrowing it down](#narrowing-it-down), and [what it cannot see](#what-top-cannot-see)
 - [`pcpm watch`](#pcpm-watch) — and [traffic](#traffic)
 - [Install](#install)
 - [Configuration](#configuration)
@@ -134,8 +134,37 @@ MEM  49 GB / 64 GB
 In a terminal it redraws every interval until you press `q`. Piped or redirected it prints one frame and exits, so `pcpm top | head` and `pcpm top -o json > f.json` need no flag; `--once` forces one frame in a terminal too.
 
 ```
-q quit    [c cpu]  m memory    every 1s
+q quit   [c cpu]  m memory    / focus   every 1s
 ```
+
+### Narrowing it down
+
+`/` narrows the ranking to what you are looking for, matched on the name, the Launch Directory or the application. `dir:`, `app:` and `name:` limit a word to one of the three; several words all have to match.
+
+```console
+CPU  581% of 1000% (10 cores)  ·  attributed 477%  ·  unattributed 104% (needs sudo)
+MEM  37 GB / 64 GB
+matching 139 of 886  ·  CPU 92.7% of 477%  ·  RSS 17 GB of 55 GB
+
+%CPU     RSS    PID  NAME      DIR
+35.3  1.5 GB  16779  opencode  …/xunull-repository
+19.1   21 MB   4243  tui.test  …/xunull-repository/…/tui
+ 8.0  898 MB   9960  claude    …/xunull-repository/…/pcpm
+ 6.0  733 MB  88439  opencode  …/xunull-repository
+ 5.3   28 MB  12493  pcpm      …/xunull-repository/…/pcpm
+ 5.1   28 MB  42295  pcpm      …/xunull-repository/…/aifd
+
+q quit   [c cpu]  m memory    / focus   every 1s
+focus: dir:xunull-repository
+```
+
+Two things in that output are there because hiding rows is easy to do dishonestly.
+
+**`matching 139 of 886 · …`.** Hidden rows do not change the header, so without this line the ranking would claim to account for `477%` of the machine while showing you a twentieth of it. The figures cover every match rather than the six on screen, so a tall window and a short one agree. `RSS 17 GB of 55 GB` is measured against the ranking's own resident total rather than the header's `37 GB`: resident sizes count shared pages once per process, so their sum overshoots what the machine is really using — as those two numbers show — and writing `of 37 GB` would assert a part-of-whole relation that does not hold.
+
+**`…/xunull-repository/…/tui`.** The `DIR` column normally collapses to the last two segments, which would have rendered every row above as `…/open-source/pcpm` and friends — matching a word none of them displayed. It collapses around the match instead, so the reason a row is on screen is on screen.
+
+The focus is stated in the footer for as long as it applies, because a three-row table reads exactly like an idle machine once you have forgotten you narrowed it. It is not the [ignore list](#configuration): a focus lives in the running view, says what to *keep* rather than what to leave out, and is matched as plain text rather than as a glob.
 
 **It takes a second to answer, and that is not a bug.** The kernel keeps no CPU percentage — only a counter of CPU seconds consumed since each process started. A rate exists only as a difference, so pcpm reads every process twice and reports what changed. Anything that answers instantly is reporting a *lifetime average* instead: `ps aux`'s `%CPU` is cumulative CPU divided by process age, which reported 14.5% for a process actually using 26.5%.
 
@@ -361,6 +390,7 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) — why the collector is one daemon controlled through the database
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) — why `top` ranks only what it can actually measure
   - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — why traffic comes from a long-lived `nettop` rather than the framework
+  - [ADR-0013](docs/adr/0013-a-focus-is-typed-into-the-view-and-cannot-be-silent.md) — why a focus is not the ignore list, and why it has to say what it hides
 - [`CONTEXT.md`](CONTEXT.md) — the project's glossary
 
 ## License

@@ -19,7 +19,7 @@
 
 - [`pcpm forgotten`](#pcpm-forgotten) —— 以及[它凭什么准](#forgotten-凭什么准)
 - [`pcpm ports`](#pcpm-ports)
-- [`pcpm top`](#pcpm-top) —— 以及[它看不到什么](#top-看不到什么)
+- [`pcpm top`](#pcpm-top) —— [把范围收窄](#把范围收窄),以及[它看不到什么](#top-看不到什么)
 - [`pcpm watch`](#pcpm-watch) —— 以及[流量](#流量)
 - [安装](#安装)
 - [配置](#配置)
@@ -134,8 +134,37 @@ MEM  49 GB / 64 GB
 在终端里它会按间隔持续刷新,按 `q` 退出。一旦被管道或重定向接走,就只打一帧然后退出 —— 所以 `pcpm top | head`、`pcpm top -o json > f.json` 都不需要额外加开关;在终端里想只打一帧,用 `--once`。
 
 ```
-q quit    [c cpu]  m memory    every 1s
+q quit   [c cpu]  m memory    / focus   every 1s
 ```
+
+### 把范围收窄
+
+按 `/` 可以把排名收窄到你要找的东西,匹配进程名、启动目录或应用。`dir:`、`app:`、`name:` 把一个词限定到其中一列;写多个词时每个都要命中。
+
+```console
+CPU  581% of 1000% (10 cores)  ·  attributed 477%  ·  unattributed 104% (needs sudo)
+MEM  37 GB / 64 GB
+matching 139 of 886  ·  CPU 92.7% of 477%  ·  RSS 17 GB of 55 GB
+
+%CPU     RSS    PID  NAME      DIR
+35.3  1.5 GB  16779  opencode  …/xunull-repository
+19.1   21 MB   4243  tui.test  …/xunull-repository/…/tui
+ 8.0  898 MB   9960  claude    …/xunull-repository/…/pcpm
+ 6.0  733 MB  88439  opencode  …/xunull-repository
+ 5.3   28 MB  12493  pcpm      …/xunull-repository/…/pcpm
+ 5.1   28 MB  42295  pcpm      …/xunull-repository/…/aifd
+
+q quit   [c cpu]  m memory    / focus   every 1s
+focus: dir:xunull-repository
+```
+
+这段输出里有两处,是因为"藏行"这件事太容易做得不诚实才存在的。
+
+**`matching 139 of 886 · …`。** 被藏起来的行不会改动表头,所以少了这一行,这份排名就会一边只给你看二十分之一,一边宣称自己覆盖了机器的 `477%`。这里的数字统计的是**全部命中的进程**,而不是屏幕上那六行,所以高窗口和矮窗口不会给出两个答案。`RSS 17 GB of 55 GB` 的分母取的是排名自身的常驻内存总和,而不是表头那个 `37 GB`:常驻内存会把共享页在每个进程里各算一次,加起来必然超过机器实际用掉的量 —— 这两个数字本身就是证据 —— 写成 `of 37 GB` 等于断言了一个并不成立的部分/整体关系。
+
+**`…/xunull-repository/…/tui`。** `DIR` 列平时会塌缩到最后两段,那样上面每一行都会显示成 `…/open-source/pcpm` 之类 —— 命中的那个词一个字都不在屏幕上。所以它改为绕着命中处塌缩:这一行凭什么在这儿,就写在这一行里。
+
+只要 focus 还生效,footer 就一直显示它 —— 因为一旦你忘了自己收窄过,三行的表和一台闲置的机器长得一模一样。它不是[忽略列表](#配置):focus 只活在运行中的界面里,说的是**保留**什么而不是排除什么,而且按纯文本匹配,不是 glob。
 
 **它要等一秒才出结果,这不是 bug。** 内核根本不存"CPU 使用率"这个数,只存"这个进程从出生到现在一共烧了多少 CPU 秒"。率只能是两次读数之差,所以 pcpm 必须读两遍再相减。任何瞬间就给出答案的工具,报的都是**终身平均** —— `ps aux` 的 `%CPU` 就是"累计 CPU ÷ 进程年龄":实测某个真实占用 26.5% 的进程,它报 14.5%。
 
@@ -359,7 +388,8 @@ top:
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) —— Sample 为何存累计计数器而非百分比
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) —— 采集器为何是「单守护进程 + 以数据库为控制面」
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) —— `top` 为何只排它能真正测准的进程
-  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — 流量为何取自长驻 `nettop` 而不是那个私有框架
+  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) —— 流量为何取自长驻 `nettop` 而不是那个私有框架
+  - [ADR-0013](docs/adr/0013-a-focus-is-typed-into-the-view-and-cannot-be-silent.md) —— 为什么 focus 不是忽略列表,以及它为什么必须说出自己藏了什么
 - [`CONTEXT.md`](CONTEXT.md) —— 项目术语表
 
 ## 许可证

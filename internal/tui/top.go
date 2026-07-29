@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -37,6 +38,16 @@ type TopModel struct {
 	frame         *top.Frame
 	err           error
 	sort          top.SortKey
+
+	// focus is the narrowing in effect. It is held here rather than on the
+	// frame so that it outlives the frames: a new reading arrives every
+	// interval, and a focus reset by each one would last a second.
+	focus top.Focus
+	// editing and input are the half-typed focus. While editing, keys are text
+	// rather than commands — the sort keys are letters, and a reader typing
+	// "chrome" must not find themselves sorting by memory.
+	editing bool
+	input   string
 }
 
 // NewTop builds the live ranking. rows of top.FitWindow fills the terminal.
@@ -90,6 +101,9 @@ func (m TopModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.editing {
+			return m.edit(msg)
+		}
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
@@ -97,6 +111,12 @@ func (m TopModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.sortBy(top.ByCPU)
 		case "m":
 			return m.sortBy(top.ByMemory)
+		case "/":
+			// Start from the focus in effect so that it can be refined. It is
+			// also what makes clearing possible without a key of its own:
+			// delete the text and press Enter.
+			m.editing, m.input = true, m.focus.String()
+			return m, nil
 		}
 		return m, nil
 
@@ -114,6 +134,41 @@ func (m TopModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tick()
 	}
 	return m, nil
+}
+
+// edit handles a keystroke aimed at the focus being typed.
+//
+// Escape here means "abandon this edit", not "quit" — the reader is inside
+// something, and the way out of it is not the way out of the view. Outside the
+// input it still quits, which is what it has always done. Ctrl+C is the
+// exception: it aborts anything, and a reader whose only reflex is Ctrl+C must
+// not be trapped in a text field.
+func (m TopModel) edit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEnter:
+		m.editing = false
+		m.focus = top.ParseFocus(m.input)
+	case tea.KeyEsc:
+		// The typing is discarded; the focus that was in effect is untouched.
+		m.editing = false
+	case tea.KeyBackspace:
+		m.input = dropLastRune(m.input)
+	case tea.KeyRunes, tea.KeySpace:
+		m.input += string(msg.Runes)
+	}
+	return m, nil
+}
+
+// dropLastRune removes one character, not one byte. Slicing bytes would leave
+// half a character behind for anyone whose focus is not written in ASCII.
+func dropLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
 }
 
 // sortBy reorders what is already on screen rather than waiting for the next
@@ -142,13 +197,35 @@ func (m TopModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(render.TopHeader(m.frame.Totals))
+	b.WriteString(m.head())
 	b.WriteByte('\n')
-	b.WriteString(render.TopTable(m.visible(), m.home, m.width))
+	b.WriteString(render.TopTable(m.visible(), m.focus, m.home, m.width))
 	b.WriteByte('\n')
 	b.WriteString(m.footer())
 	return b.String()
 }
+
+// head is what the machine did, and — while a Focus is narrowing the rows —
+// how much of that the rows still account for.
+//
+// The header itself does not change under a Focus. It is a statement about the
+// machine, and the machine did not do anything different because a reader typed
+// a word; what changes is how much of it is on screen, which is what the line
+// below it is for.
+func (m TopModel) head() string {
+	head := render.TopHeader(m.frame.Totals)
+	if m.focus.Active() {
+		// The denominators come from the frame's own totals, which is what the
+		// header above was rendered from. Adding the rows up again here would
+		// let the two lines disagree about the same ranking.
+		head += render.FocusSummary(top.Total(m.matching()), m.frame.Totals.Ranked())
+	}
+	return head
+}
+
+// matching is the whole ranking as the focus leaves it — every row it keeps,
+// not merely those that will fit on screen.
+func (m TopModel) matching() []top.Process { return m.focus.Apply(m.frame.Rows) }
 
 // visible is as many rows as were asked for, or as many as the window holds.
 //
@@ -156,21 +233,22 @@ func (m TopModel) View() string {
 // counted by hand, because the header's height and the legend's presence both
 // depend on the data.
 func (m TopModel) visible() []top.Process {
+	rows := m.matching()
 	if m.rows != top.FitWindow {
-		return top.Top(m.frame.Rows, m.rows)
+		return top.Top(rows, m.rows)
 	}
-	rows := top.Top(m.frame.Rows, max(m.height-m.chrome(false), 1))
+	fitted := top.Top(rows, max(m.height-m.chrome(false), 1))
 	// The legend only appears once a marked row is on screen, and it costs two
 	// lines that were not budgeted for.
-	if anyForgotten(rows) {
-		rows = top.Top(m.frame.Rows, max(m.height-m.chrome(true), 1))
+	if anyForgotten(fitted) {
+		fitted = top.Top(rows, max(m.height-m.chrome(true), 1))
 	}
-	return rows
+	return fitted
 }
 
 // chrome is how many lines the view spends on things that are not rows.
 func (m TopModel) chrome(withLegend bool) int {
-	lines := strings.Count(render.TopHeader(m.frame.Totals), "\n") + // the header
+	lines := strings.Count(m.head(), "\n") + // the header, and the focus summary under it
 		1 + // the blank line under it
 		1 + // the column headings
 		1 + // the blank line above the footer
@@ -190,7 +268,15 @@ func anyForgotten(rows []top.Process) bool {
 	return false
 }
 
+// footer is the one line always on screen, which is why the focus lives in it.
+//
+// A focus hides rows. A reader who has forgotten theirs is on would read a
+// three-row table as the whole machine, so it is stated for as long as it is in
+// effect rather than only at the moment it is set.
 func (m TopModel) footer() string {
+	if m.editing {
+		return fmt.Sprintf("focus: /%s▏  enter apply   esc cancel\n", m.input)
+	}
 	cpu, mem := " c cpu ", " m memory "
 	switch m.sort {
 	case top.ByMemory:
@@ -198,7 +284,11 @@ func (m TopModel) footer() string {
 	default:
 		cpu = "[c cpu]"
 	}
-	return fmt.Sprintf("q quit   %s %s   every %s\n", cpu, mem, m.interval)
+	line := fmt.Sprintf("q quit   %s %s   / focus   every %s", cpu, mem, m.interval)
+	if m.focus.Active() {
+		line += fmt.Sprintf("\nfocus: %s", m.focus)
+	}
+	return line + "\n"
 }
 
 // RunTop opens the live ranking and blocks until the reader quits.

@@ -19,7 +19,7 @@ func TopHeader(t top.Totals) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CPU  %s%% of %s%% (%d cores)  ·  attributed %s%%  ·  unattributed %s%%",
 		rankedPercent(t.BusyPercent), rankedPercent(t.Capacity()), t.Cores,
-		rankedPercent(t.AttributedPercent), rankedPercent(t.UnattributedPercent()))
+		rankedPercent(t.AttributedPercent()), rankedPercent(t.UnattributedPercent()))
 	// The gap is always shown. Hiding it when running as root would assume it
 	// falls to zero there, and it does not: kernel_task is PID 0, which cannot
 	// be read at any privilege. Only the remedy is conditional, because there
@@ -48,8 +48,14 @@ const forgottenMark = "!"
 // every process outside a macOS bundle, which on Linux is all of them; the
 // marker column is empty when nothing is forgotten. Rendering either as a strip
 // of blanks would cost width that DIR can use.
-func TopTable(rows []top.Process, home string, width int) string {
+func TopTable(rows []top.Process, focus top.Focus, home string, width int) string {
 	if len(rows) == 0 {
+		// The two empty tables mean opposite things. "No processes to rank"
+		// under a focus would say the machine is idle, when what happened is
+		// that the reader asked for something the machine is not running.
+		if focus.Active() {
+			return fmt.Sprintf("nothing matches %s — press / to change it\n", focus)
+		}
 		return "no processes to rank\n"
 	}
 
@@ -93,7 +99,10 @@ func TopTable(rows []top.Process, home string, width int) string {
 		if anyApp {
 			cells = append(cells, p.Application())
 		}
-		cells = append(cells, ShortPath(p.Cwd, home, dirColumnWidth))
+		// A Focus matches the whole path but the column shows only part of it,
+		// so the column is collapsed around whatever kept the row rather than
+		// around its tail.
+		cells = append(cells, ShortPathAround(p.Cwd, home, dirColumnWidth, focus.DirMatch(p)))
 		body[i] = cells
 	}
 
@@ -156,7 +165,7 @@ func TopJSON(rows []top.Process, t top.Totals) (string, error) {
 			Cores:               t.Cores,
 			BusyPercent:         t.BusyPercent,
 			CapacityPercent:     t.Capacity(),
-			AttributedPercent:   t.AttributedPercent,
+			AttributedPercent:   t.AttributedPercent(),
 			UnattributedPercent: t.UnattributedPercent(),
 			Complete:            t.Complete,
 		},

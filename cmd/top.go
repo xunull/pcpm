@@ -87,7 +87,7 @@ func runTop(cmd *cobra.Command, _ []string) error {
 		home, _ := os.UserHomeDir()
 		fmt.Fprint(out, render.TopHeader(frame.Totals))
 		fmt.Fprintln(out)
-		fmt.Fprint(out, render.TopTable(top.Top(frame.Rows, rows), home, terminalWidth(out)))
+		fmt.Fprint(out, render.TopTable(top.Top(frame.Rows, rows), top.Focus{}, home, terminalWidth(out)))
 	default:
 		return fmt.Errorf("unhandled output format %v", format)
 	}

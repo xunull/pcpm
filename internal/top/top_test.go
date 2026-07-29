@@ -535,9 +535,9 @@ func TestAttributionCoversEveryProcessNotJustTheRowsShown(t *testing.T) {
 		t.Fatalf("Top should cut to 2, got %d", shown)
 	}
 	// five processes at 10% each, however many a screen would show
-	if frame.Totals.AttributedPercent != 50 {
+	if frame.Totals.AttributedPercent() != 50 {
 		t.Errorf("attributed = %v%%, want 50 — every visible process, not just the rows",
-			frame.Totals.AttributedPercent)
+			frame.Totals.AttributedPercent())
 	}
 	if frame.Totals.BusyPercent != 100 {
 		t.Errorf("busy = %v%%, want 100", frame.Totals.BusyPercent)
@@ -551,7 +551,7 @@ func TestAttributionCoversEveryProcessNotJustTheRowsShown(t *testing.T) {
 // A ranking that momentarily accounts for more than the machine did is that
 // skew, and must not surface as a negative.
 func TestUnattributedNeverGoesNegative(t *testing.T) {
-	totals := Totals{BusyPercent: 10, AttributedPercent: 25}
+	totals := Totals{BusyPercent: 10, ranked: Sum{CPUPercent: 25}}
 
 	if got := totals.UnattributedPercent(); got != 0 {
 		t.Errorf("UnattributedPercent = %v, want 0", got)
@@ -613,7 +613,7 @@ func TestTheForgottenMarkerHonoursTheIgnoreList(t *testing.T) {
 // kernel_task is PID 0 and cannot be read at any privilege, so a root ranking
 // still leaves a residual. Hiding it there would be assuming it away.
 func TestUnattributedIsStillReportedWhenTheRankingIsComplete(t *testing.T) {
-	totals := Totals{BusyPercent: 700, AttributedPercent: 640, Complete: true}
+	totals := Totals{BusyPercent: 700, ranked: Sum{CPUPercent: 640}, Complete: true}
 
 	if got := totals.UnattributedPercent(); got != 60 {
 		t.Errorf("UnattributedPercent = %v, want 60 even when complete", got)

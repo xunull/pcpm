@@ -33,7 +33,7 @@ func ranked() []top.Process {
 // A ranking exists to be compared down its columns, which only works when the
 // digits line up.
 func TestTopTableRightAlignsItsQuantities(t *testing.T) {
-	out := TopTable(ranked(), "", 0)
+	out := TopTable(ranked(), top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	widest := displayWidth("812")
@@ -49,7 +49,7 @@ func TestTopTableRightAlignsItsQuantities(t *testing.T) {
 // The percentage is the whole point of the ordering; it must not read as zero
 // for a process using eight cores just because the format assumed one.
 func TestTopTableShowsRatesAboveOneCore(t *testing.T) {
-	out := TopTable(ranked(), "", 0)
+	out := TopTable(ranked(), top.Focus{}, "", 0)
 
 	if !strings.Contains(out, "812") {
 		t.Errorf("a rate above 100%% is missing from:\n%s", out)
@@ -66,7 +66,7 @@ func TestTopTableKeepsItsColumnsWhenANameIsWide(t *testing.T) {
 		{Process: proc.Process{PID: 4, Name: "Code Helper", Cwd: "/four"}},
 	}
 
-	out := TopTable(rows, "", 0)
+	out := TopTable(rows, top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	// DIR is last, so where its cell begins is where every earlier column
@@ -93,7 +93,7 @@ func TestTopTableExplainsItsMarker(t *testing.T) {
 		{Process: proc.Process{PID: 2, Name: "claude"}},
 	}
 
-	out := TopTable(rows, "", 0)
+	out := TopTable(rows, top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	if !strings.HasPrefix(lines[1], forgottenMark) {
@@ -112,7 +112,7 @@ func TestTopTableExplainsItsMarker(t *testing.T) {
 func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 	plain := TopTable([]top.Process{
 		{Process: proc.Process{PID: 1, Name: "bun", Exe: "/opt/homebrew/bin/bun", Cwd: "/x"}},
-	}, "", 0)
+	}, top.Focus{}, "", 0)
 
 	if strings.Contains(plain, "APP") {
 		t.Errorf("an APP column was rendered with nothing in it:\n%s", plain)
@@ -123,7 +123,7 @@ func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 
 	bundled := TopTable([]top.Process{
 		{Process: proc.Process{PID: 1, Name: "stable", Exe: "/Applications/Warp.app/Contents/MacOS/stable"}},
-	}, "", 0)
+	}, top.Focus{}, "", 0)
 
 	if !strings.Contains(bundled, "APP") || !strings.Contains(bundled, "Warp") {
 		t.Errorf("the APP column is missing when a process has one:\n%s", bundled)
@@ -131,7 +131,7 @@ func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 }
 
 func TestTopTableSaysWhenThereIsNothingToRank(t *testing.T) {
-	if out := TopTable(nil, "", 0); !strings.Contains(out, "no processes") {
+	if out := TopTable(nil, top.Focus{}, "", 0); !strings.Contains(out, "no processes") {
 		t.Errorf("TopTable(nil) = %q", out)
 	}
 }
@@ -139,7 +139,7 @@ func TestTopTableSaysWhenThereIsNothingToRank(t *testing.T) {
 // The table has no room for a command line, so JSON is where it has to survive
 // intact — that is the point of having both.
 func TestTopJSONKeepsTheWholeCommandLine(t *testing.T) {
-	body, err := TopJSON(ranked(), top.Totals{Cores: 10, BusyPercent: 900, AttributedPercent: 825})
+	body, err := TopJSON(ranked(), top.Totals{Cores: 10, BusyPercent: 900}.WithRanked(top.Sum{CPUPercent: 825}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +198,9 @@ func TestTopJSONRendersNothingAsAnEmptyArray(t *testing.T) {
 // thirds of it, and what to do about the difference.
 func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
 	out := TopHeader(top.Totals{
-		Cores: 10, BusyPercent: 699, AttributedPercent: 551,
+		Cores: 10, BusyPercent: 699,
 		MemoryUsedBytes: 52 << 30, MemoryTotalBytes: 64 << 30,
-	})
+	}.WithRanked(top.Sum{CPUPercent: 551}))
 
 	for _, want := range []string{"699%", "1000%", "10 cores", "551%", "148%", "sudo"} {
 		if !strings.Contains(out, want) {
@@ -216,12 +216,45 @@ func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
 // cannot be read at any privilege, so a residual remains and hiding it would be
 // assuming it away.
 func TestACompleteRankingStillReportsItsResidual(t *testing.T) {
-	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, AttributedPercent: 690, Complete: true})
+	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, Complete: true}.WithRanked(top.Sum{CPUPercent: 690}))
 
 	if !strings.Contains(out, "unattributed 9.0%") {
 		t.Errorf("a complete ranking dropped its residual:\n%s", out)
 	}
 	if strings.Contains(out, "sudo") {
 		t.Errorf("a complete ranking has no remedy left to suggest:\n%s", out)
+	}
+}
+
+// A row kept by a word buried in the middle of its path looked arbitrary: the
+// column always collapsed to the tail, so the reason was never on screen.
+func TestTopTableCollapsesTheDirectoryAroundWhatKeptTheRow(t *testing.T) {
+	rows := []top.Process{{Process: proc.Process{
+		PID: 1, Name: "node", Cwd: "/Users/q/xunull-repository/xunull-github/open-source/pcpm",
+	}}}
+
+	plain := TopTable(rows, top.Focus{}, "/Users/q", 200)
+	if strings.Contains(plain, "xunull-repository") {
+		t.Fatalf("this path no longer needs collapsing; the test proves nothing:\n%s", plain)
+	}
+
+	focused := TopTable(rows, top.ParseFocus("dir:xunull-repository"), "/Users/q", 200)
+	if !strings.Contains(focused, "xunull-repository") {
+		t.Errorf("the column does not show why the row was kept:\n%s", focused)
+	}
+}
+
+// A row kept for its name says nothing about its directory, so re-centring the
+// column would be answering a question nobody asked.
+func TestTopTableLeavesTheDirectoryAloneForANonDirectoryMatch(t *testing.T) {
+	rows := []top.Process{{Process: proc.Process{
+		PID: 1, Name: "node", Cwd: "/Users/q/xunull-repository/xunull-github/open-source/pcpm",
+	}}}
+
+	plain := TopTable(rows, top.Focus{}, "/Users/q", 200)
+	byName := TopTable(rows, top.ParseFocus("name:node"), "/Users/q", 200)
+
+	if plain != byName {
+		t.Errorf("the directory column changed for a name match:\n plain: %s\n focus: %s", plain, byName)
 	}
 }
