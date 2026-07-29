@@ -34,8 +34,8 @@ type Config struct {
 
 // TopConfig is what `pcpm top` does when asked for nothing in particular.
 //
-// Interval is both the refresh period and the window each figure averages over
-// — they are the same measurement, so they cannot be set apart. Raising it
+// Interval is both the gap between redraws and the window each figure averages
+// over — they are the same measurement, so they cannot be set apart. Raising it
 // steadies the ordering at the cost of noticing a change later, and of a longer
 // wait before a one-shot answers.
 //
@@ -153,8 +153,8 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 		// Naming the minimum rather than only refusing the value: a reader told
 		// their setting is invalid still has to guess what to type instead.
 		return Config{}, fmt.Errorf(
-			"top.interval: %s is shorter than one reading of the process table takes, "+
-				"so pcpm would spend most of it measuring itself; the minimum is %s",
+			"top.interval: %s is short enough that reading the process table would be "+
+				"a large part of it, and pcpm would rank itself; the minimum is %s",
 			d, top.MinInterval)
 	}
 

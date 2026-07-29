@@ -172,10 +172,7 @@ func TestTrafficCollectionCanBeTurnedOff(t *testing.T) {
 // An Interval shorter than a sample takes to gather makes pcpm a significant
 // part of what it is measuring — enough CPU, at 100ms, to rank itself.
 func TestAnIntervalTooShortToMeasureInIsRefused(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("top:\n  interval: 100ms\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeConfig(t, t.TempDir(), "top:\n  interval: 100ms\n")
 
 	_, err := Load(nil, path)
 
@@ -194,11 +191,7 @@ func TestAnIntervalTooShortToMeasureInIsRefused(t *testing.T) {
 // The boundary belongs to the accepted side, or the message names a value that
 // is itself refused.
 func TestTheMinimumIntervalIsItselfAccepted(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "top:\n  interval: " + top.MinInterval.String() + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeConfig(t, t.TempDir(), "top:\n  interval: "+top.MinInterval.String()+"\n")
 
 	cfg, err := Load(nil, path)
 
@@ -213,7 +206,7 @@ func TestTheMinimumIntervalIsItselfAccepted(t *testing.T) {
 // The three ways to set an Interval must be refused alike. Validating after the
 // sources are resolved is what makes that true, and this pins it: a check moved
 // into any one reader would leave the other two open.
-func TestAShortIntervalIsRefusedWhicheverWaySetIt(t *testing.T) {
+func TestAShortIntervalIsRefusedWhicheverWayItIsSet(t *testing.T) {
 	tooShort := (top.MinInterval - time.Millisecond).String()
 
 	t.Run("flag", func(t *testing.T) {
@@ -233,6 +226,57 @@ func TestAShortIntervalIsRefusedWhicheverWaySetIt(t *testing.T) {
 			t.Error("a short interval given in the environment was accepted")
 		}
 	})
+
+	t.Run("file", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "top:\n  interval: "+tooShort+"\n")
+		if _, err := Load(nil, path); err == nil {
+			t.Error("a short interval given in the file was accepted")
+		}
+	})
+}
+
+// A valid Interval has to reach the config, not merely survive validation. The
+// refusal tests above would all pass against a Load that ignored the setting.
+func TestAnIntervalGivenAnywhereBeatsTheDefault(t *testing.T) {
+	const want = 5 * time.Second
+
+	t.Run("flag", func(t *testing.T) {
+		flags := pflag.NewFlagSet("top", pflag.ContinueOnError)
+		flags.Duration("interval", top.DefaultInterval, "")
+		if err := flags.Set("interval", want.String()); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(flags, filepath.Join(t.TempDir(), "none.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Top.Interval != want {
+			t.Errorf("interval = %v, want the flag's %v", cfg.Top.Interval, want)
+		}
+	})
+
+	// The real command always passes a flag set carrying the default, so this is
+	// the precedence that actually ships: an untouched flag must not beat a file.
+	t.Run("file, against an untouched flag", func(t *testing.T) {
+		flags := pflag.NewFlagSet("top", pflag.ContinueOnError)
+		flags.Duration("interval", top.DefaultInterval, "")
+		path := writeConfig(t, t.TempDir(), "top:\n  interval: "+want.String()+"\n")
+		cfg, err := Load(flags, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Top.Interval != want {
+			t.Errorf("interval = %v, want the file's %v — an unset flag beat it", cfg.Top.Interval, want)
+		}
+	})
+}
+
+// Zero was covered; a negative shares the branch only by inspection.
+func TestANegativeIntervalIsRefused(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), "top:\n  interval: -3s\n")
+	if _, err := Load(nil, path); err == nil {
+		t.Error("a negative interval was accepted")
+	}
 }
 
 // Every nested setting was unreachable from the environment: viper builds the

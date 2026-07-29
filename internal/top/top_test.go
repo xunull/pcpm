@@ -642,7 +642,7 @@ func TestTheDefaultIntervalIsAtLeastTheMinimum(t *testing.T) {
 }
 
 // Two seconds is a decision, not an accident: the Interval is the averaging
-// window as well as the refresh period, so this is also a statement about how
+// window as well as the gap between redraws, so this is also a statement about how
 // steady the figures are. One second was measurably too fast to read.
 func TestTheDefaultIntervalIsTwoSeconds(t *testing.T) {
 	if DefaultInterval != 2*time.Second {

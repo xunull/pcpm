@@ -28,7 +28,7 @@ import (
 // that configuration and code cannot drift apart on what "the default" is.
 //
 // Two seconds, rather than the one second top(1) uses, because the Interval is
-// both the refresh period and the window each figure averages over: a redraw
+// both the gap between redraws and the window each figure averages over: a redraw
 // slow enough to read is the same setting as a figure steady enough to trust.
 // It cannot be shortened for responsiveness without also making the figures
 // noisier, nor lengthened for calm without flattening brief spikes into it.
