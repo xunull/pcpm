@@ -99,7 +99,10 @@ func TopTable(rows []top.Process, focus top.Focus, home string, width int) strin
 		if anyApp {
 			cells = append(cells, p.Application())
 		}
-		cells = append(cells, ShortPath(p.Cwd, home, dirColumnWidth))
+		// A Focus matches the whole path but the column shows only part of it,
+		// so the column is collapsed around whatever kept the row rather than
+		// around its tail.
+		cells = append(cells, ShortPathAround(p.Cwd, home, dirColumnWidth, focus.DirMatch(p)))
 		body[i] = cells
 	}
 

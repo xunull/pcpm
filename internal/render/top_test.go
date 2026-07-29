@@ -225,3 +225,36 @@ func TestACompleteRankingStillReportsItsResidual(t *testing.T) {
 		t.Errorf("a complete ranking has no remedy left to suggest:\n%s", out)
 	}
 }
+
+// A row kept by a word buried in the middle of its path looked arbitrary: the
+// column always collapsed to the tail, so the reason was never on screen.
+func TestTopTableCollapsesTheDirectoryAroundWhatKeptTheRow(t *testing.T) {
+	rows := []top.Process{{Process: proc.Process{
+		PID: 1, Name: "node", Cwd: "/Users/q/xunull-repository/xunull-github/open-source/pcpm",
+	}}}
+
+	plain := TopTable(rows, top.Focus{}, "/Users/q", 200)
+	if strings.Contains(plain, "xunull-repository") {
+		t.Fatalf("this path no longer needs collapsing; the test proves nothing:\n%s", plain)
+	}
+
+	focused := TopTable(rows, top.ParseFocus("dir:xunull-repository"), "/Users/q", 200)
+	if !strings.Contains(focused, "xunull-repository") {
+		t.Errorf("the column does not show why the row was kept:\n%s", focused)
+	}
+}
+
+// A row kept for its name says nothing about its directory, so re-centring the
+// column would be answering a question nobody asked.
+func TestTopTableLeavesTheDirectoryAloneForANonDirectoryMatch(t *testing.T) {
+	rows := []top.Process{{Process: proc.Process{
+		PID: 1, Name: "node", Cwd: "/Users/q/xunull-repository/xunull-github/open-source/pcpm",
+	}}}
+
+	plain := TopTable(rows, top.Focus{}, "/Users/q", 200)
+	byName := TopTable(rows, top.ParseFocus("name:node"), "/Users/q", 200)
+
+	if plain != byName {
+		t.Errorf("the directory column changed for a name match:\n plain: %s\n focus: %s", plain, byName)
+	}
+}

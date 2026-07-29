@@ -124,6 +124,25 @@ func contains(haystack, lowered string) bool {
 	return strings.Contains(strings.ToLower(haystack), lowered)
 }
 
+// DirMatch returns the text of the first term matching the process's Launch
+// Directory, or "" when the row was kept for some other reason.
+//
+// It exists so that the directory column can show the reader why a row is
+// there. A Focus matches the whole path, but the column has room for only part
+// of it, so a row can be kept by a word that the column does not happen to be
+// showing.
+func (f Focus) DirMatch(p Process) string {
+	for _, t := range f.terms {
+		if t.field != dirField && t.field != anyField {
+			continue
+		}
+		if contains(p.Cwd, t.text) {
+			return t.text
+		}
+	}
+	return ""
+}
+
 // Apply returns the rows the Focus keeps, in the order they were given.
 //
 // The result is a new slice. The view holds the full ranking across frames and
