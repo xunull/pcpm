@@ -119,22 +119,22 @@ What is consuming CPU at this moment, busiest first.
 
 ```console
 $ pcpm top -n 6
-CPU  193% of 1000% (10 cores)  ·  attributed 170%  ·  unattributed 22.8% (needs sudo)
-MEM  49 GB / 64 GB
+CPU  504% of 1000% (10 cores)  ·  attributed 376%  ·  unattributed 128% (needs sudo)
+MEM  39 GB / 64 GB
 
-%CPU     RSS    PID  NAME                           APP     DIR
-15.9  217 MB  56394  stable                         Warp    ~
-13.5  615 MB  61742  claude                                 …/open-source/pcpm
-11.2  217 MB  62625  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
-10.0  300 MB  34442  Kimi Helper (Renderer)         Kimi    /
- 8.1   23 MB  61398  pcpm-r                                 …/open-source/pcpm
- 7.9   28 MB  25922  pcpm                                   …/open-source/pcpm
+%CPU     RSS    PID  NAME                             APP            DIR
+90.9  633 MB  72917  node                                            …/open-source/ai2nao
+89.5  1.3 GB   7568  Google Chrome                    Google Chrome  /
+40.0  143 MB  36680  Google Chrome Helper (Renderer)  Google Chrome  /
+22.9  368 MB   7169  Google Chrome Helper (Renderer)  Google Chrome  /
+22.1  162 MB   7148  Google Chrome Helper (Renderer)  Google Chrome  /
+17.8  270 MB  30779  Kimi Helper (Renderer)           Kimi           /
 ```
 
 In a terminal it redraws every interval until you press `q`. Piped or redirected it prints one frame and exits, so `pcpm top | head` and `pcpm top -o json > f.json` need no flag; `--once` forces one frame in a terminal too.
 
 ```
-q quit   [c cpu]  m memory    / focus   every 1s
+q quit   [c cpu]  m memory    / focus   every 2s
 ```
 
 ### Narrowing it down
@@ -167,19 +167,19 @@ The prefixes earn their keep on exactly this: on the development machine `chrome
 A focus lives in the interactive view only: `--once` and `-o json` have none. A narrowing worth keeping is what the [ignore list](#configuration) is for.
 
 ```console
-CPU  581% of 1000% (10 cores)  ·  attributed 477%  ·  unattributed 104% (needs sudo)
-MEM  37 GB / 64 GB
-matching 139 of 886  ·  CPU 92.7% of 477%  ·  RSS 17 GB of 55 GB
+CPU  354% of 1000% (10 cores)  ·  attributed 264%  ·  unattributed 89.2% (needs sudo)
+MEM  39 GB / 64 GB
+matching 108 of 830  ·  CPU 37.3% of 264%  ·  RSS 9.1 GB of 40 GB
 
 %CPU     RSS    PID  NAME      DIR
-35.3  1.5 GB  16779  opencode  …/xunull-repository
-19.1   21 MB   4243  tui.test  …/xunull-repository/…/tui
- 8.0  898 MB   9960  claude    …/xunull-repository/…/pcpm
- 6.0  733 MB  88439  opencode  …/xunull-repository
- 5.3   28 MB  12493  pcpm      …/xunull-repository/…/pcpm
- 5.1   28 MB  42295  pcpm      …/xunull-repository/…/aifd
+ 7.8   22 MB  36750  tui.test  …/xunull-repository/…/tui
+ 7.6  702 MB   9960  claude    …/xunull-repository/…/pcpm
+ 7.1  582 MB  97278  claude    …/xunull-repository/…/ai2nao
+ 4.8   26 MB  98314  pcpm      …/xunull-repository/…/pcpm
+ 3.2  646 MB  88439  opencode  …/xunull-repository
+ 1.7  584 MB   7561  opencode  …/xunull-repository
 
-q quit   [c cpu]  m memory    / focus   every 1s
+q quit   [c cpu]  m memory    / focus   every 2s
 focus: dir:xunull-repository
 ```
 
@@ -191,7 +191,9 @@ Three things in that output are there because hiding rows is easy to do dishones
 
 **`focus: dir:xunull-repository`.** Stated for as long as it applies, not only at the moment it is set — because a three-row table reads exactly like an idle machine once you have forgotten you narrowed it.
 
-**It takes a second to answer, and that is not a bug.** The kernel keeps no CPU percentage — only a counter of CPU seconds consumed since each process started. A rate exists only as a difference, so pcpm reads every process twice and reports what changed. Anything that answers instantly is reporting a *lifetime average* instead: `ps aux`'s `%CPU` is cumulative CPU divided by process age, which reported 14.5% for a process actually using 26.5%.
+**It takes a couple of seconds to answer, and that is not a bug.** The kernel keeps no CPU percentage — only a counter of CPU seconds consumed since each process started. A rate exists only as a difference, so pcpm reads every process twice and reports what changed. Anything that answers instantly is reporting a *lifetime average* instead: `ps aux`'s `%CPU` is cumulative CPU divided by process age, which reported 14.5% for a process actually using 26.5%.
+
+The wait is the **Interval**, and it is one setting doing two jobs: it is the gap between redraws *and* the window every figure averages over. Shortening it notices a change sooner and makes the ranking jumpier; lengthening it steadies the ordering and flattens brief spikes into the calm around them. The default is two seconds — one second redrew faster than a ranking can be read. Set your own with `-d`, down to a floor of 200ms, below which pcpm would spend most of each Interval measuring itself.
 
 **Percentages are per core.** 100% is one core fully occupied; a process spread over eight cores reads 800%, and the header's `of 1000%` is this ten-core machine flat out. Dividing by the core count instead would render the most common failure there is — one thread stuck in a loop — as a reassuring 10%.
 
@@ -378,7 +380,7 @@ watch:
   network: true             # measure traffic (macOS only; holds a child process)
 
 top:
-  interval: 1s              # both the refresh period and the window each figure averages
+  interval: 2s              # both the refresh period and the window each figure averages
   number: 0                 # 0 = fill the terminal; any other value is an explicit count
   sort: cpu                 # cpu | mem
 ```
@@ -388,7 +390,7 @@ top:
 | `sample_interval` | Less storage, coarser charts | Finer charts, proportionally more storage. Measuring a ten-process tree costs ~106µs, so CPU is not the constraint |
 | `discover_interval` | Cheaper; a process that lives and dies between two passes is never seen | Catches shorter-lived children. Each pass walks the whole process table, ~27ms |
 | `raw_retention` | Longer to drill into individual processes | Smaller database; the rollups still cover the period |
-| `top.interval` | A steadier ordering, and a longer wait before `--once` answers | Notices a change sooner, at the cost of a noisier ranking. It is one setting because the refresh period *is* the averaging window |
+| `top.interval` | A steadier ordering, and a longer wait before `--once` answers | Notices a change sooner, at the cost of a noisier ranking. It is one setting because the refresh period *is* the averaging window. Refused below 200ms |
 
 Resolution order is `flag > PCPM_* environment variable > config file > built-in default`. `--ignore` **adds to** the configured list rather than replacing it.
 

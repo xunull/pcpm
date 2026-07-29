@@ -630,3 +630,22 @@ func TestTopKeepsEverythingWhenNoLimitIsGiven(t *testing.T) {
 		t.Errorf("a limit above the row count returned %d rows, want 2", len(got))
 	}
 }
+
+// The default has to survive its own validation. Nothing else connects the two
+// constants, so lowering the default below the minimum would ship a pcpm that
+// refuses to start until it is configured.
+func TestTheDefaultIntervalIsAtLeastTheMinimum(t *testing.T) {
+	if DefaultInterval < MinInterval {
+		t.Errorf("DefaultInterval %s is below MinInterval %s; pcpm would refuse its own default",
+			DefaultInterval, MinInterval)
+	}
+}
+
+// Two seconds is a decision, not an accident: the Interval is the averaging
+// window as well as the refresh period, so this is also a statement about how
+// steady the figures are. One second was measurably too fast to read.
+func TestTheDefaultIntervalIsTwoSeconds(t *testing.T) {
+	if DefaultInterval != 2*time.Second {
+		t.Errorf("DefaultInterval = %s, want 2s", DefaultInterval)
+	}
+}

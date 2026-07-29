@@ -27,11 +27,13 @@ import (
 // Defaults for the ranking. They live here rather than in the config package so
 // that configuration and code cannot drift apart on what "the default" is.
 //
-// One second follows top(1). The interval is both the refresh period and the
-// window each figure averages over, so it cannot be shortened for
-// responsiveness without also making the figures noisier.
+// Two seconds, rather than the one second top(1) uses, because the Interval is
+// both the refresh period and the window each figure averages over: a redraw
+// slow enough to read is the same setting as a figure steady enough to trust.
+// It cannot be shortened for responsiveness without also making the figures
+// noisier, nor lengthened for calm without flattening brief spikes into it.
 const (
-	DefaultInterval = time.Second
+	DefaultInterval = 2 * time.Second
 	// MinInterval is the shortest Interval worth honouring.
 	//
 	// Below it the tool becomes a significant part of what it measures. One
