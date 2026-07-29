@@ -139,7 +139,32 @@ q quit   [c cpu]  m memory    / focus   every 1s
 
 ### Narrowing it down
 
-`/` narrows the ranking to what you are looking for, matched on the name, the Launch Directory or the application. `dir:`, `app:` and `name:` limit a word to one of the three; several words all have to match.
+`/` opens a place to type. What you type narrows the ranking to the processes it matches.
+
+| Key | |
+| --- | --- |
+| `/` | start typing — pre-filled with the focus already in effect, so it can be refined |
+| `Enter` | apply |
+| `Esc` | **while typing**, go back to the focus that was in effect. **Otherwise, quit** — as it always has |
+| `Ctrl+C` | quit, whether or not you are typing |
+
+**To clear a focus:** press `/`, delete the text, press `Enter`. There is no key of its own, because deleting what you typed already means it.
+
+A word with no prefix matches the name, the Launch Directory *or* the application. `name:`, `dir:` and `app:` limit it to one of the three:
+
+| Type this | To get |
+| --- | --- |
+| `pcpm` | anything whose name, directory or application contains `pcpm` |
+| `dir:xunull-repository` | only what was launched under that directory |
+| `app:Chrome` | only Chrome — every helper the bundle owns, and nothing else |
+| `name:node` | only executables called `node`, whatever directory they run in |
+| `dir:src node` | both, narrowed together |
+
+Matching **ignores case** and is **plain text, not a glob** — `chrome` finds `Google Chrome Helper` with no stars needed. Several words all have to match, so each one you add takes rows away.
+
+The prefixes earn their keep on exactly this: on the development machine `chrome` kept **49** processes and `app:Chrome` kept **42**. The seven it drops are `ChatGPT for Chrome` — named after Chrome, belonging to a different application entirely.
+
+A focus lives in the interactive view only: `--once` and `-o json` have none. A narrowing worth keeping is what the [ignore list](#configuration) is for.
 
 ```console
 CPU  581% of 1000% (10 cores)  ·  attributed 477%  ·  unattributed 104% (needs sudo)
@@ -158,13 +183,13 @@ q quit   [c cpu]  m memory    / focus   every 1s
 focus: dir:xunull-repository
 ```
 
-Two things in that output are there because hiding rows is easy to do dishonestly.
+Three things in that output are there because hiding rows is easy to do dishonestly.
 
 **`matching 139 of 886 · …`.** Hidden rows do not change the header, so without this line the ranking would claim to account for `477%` of the machine while showing you a twentieth of it. The figures cover every match rather than the six on screen, so a tall window and a short one agree. `RSS 17 GB of 55 GB` is measured against the ranking's own resident total rather than the header's `37 GB`: resident sizes count shared pages once per process, so their sum overshoots what the machine is really using — as those two numbers show — and writing `of 37 GB` would assert a part-of-whole relation that does not hold.
 
 **`…/xunull-repository/…/tui`.** The `DIR` column normally collapses to the last two segments, which would have rendered every row above as `…/open-source/pcpm` and friends — matching a word none of them displayed. It collapses around the match instead, so the reason a row is on screen is on screen.
 
-The focus is stated in the footer for as long as it applies, because a three-row table reads exactly like an idle machine once you have forgotten you narrowed it. It is not the [ignore list](#configuration): a focus lives in the running view, says what to *keep* rather than what to leave out, and is matched as plain text rather than as a glob.
+**`focus: dir:xunull-repository`.** Stated for as long as it applies, not only at the moment it is set — because a three-row table reads exactly like an idle machine once you have forgotten you narrowed it.
 
 **It takes a second to answer, and that is not a bug.** The kernel keeps no CPU percentage — only a counter of CPU seconds consumed since each process started. A rate exists only as a difference, so pcpm reads every process twice and reports what changed. Anything that answers instantly is reporting a *lifetime average* instead: `ps aux`'s `%CPU` is cumulative CPU divided by process age, which reported 14.5% for a process actually using 26.5%.
 
