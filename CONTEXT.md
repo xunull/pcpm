@@ -53,3 +53,7 @@ _Avoid_: system CPU, kernel CPU, other CPU, overhead
 **Application**:
 The macOS bundle a process belongs to, taken as the outermost `.app` in its executable path. One application holds many processes — renderers, GPU helpers — and grouping them is the only way a reader recognises what they are looking at. A process outside any bundle belongs to no application; it does not belong to whatever launched it, because naming the terminal that started a command points at the wrong thing.
 _Avoid_: app bundle, program, package, parent app
+
+**Focus**:
+A narrowing of the live ranking to the processes a reader is currently interested in, matched on name, Launch Directory, or Application. It is deliberately not the same thing as the ignore list: a focus is temporary, lives only in the running view, and says what to **keep** rather than what to leave out. Because it hides rows, a focus is never in effect silently — a ranking that no longer accounts for the machine has to say so, or it will be read as though it still does.
+_Avoid_: filter, search, query, ignore

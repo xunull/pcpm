@@ -33,7 +33,7 @@ func ranked() []top.Process {
 // A ranking exists to be compared down its columns, which only works when the
 // digits line up.
 func TestTopTableRightAlignsItsQuantities(t *testing.T) {
-	out := TopTable(ranked(), "", 0)
+	out := TopTable(ranked(), top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	widest := displayWidth("812")
@@ -49,7 +49,7 @@ func TestTopTableRightAlignsItsQuantities(t *testing.T) {
 // The percentage is the whole point of the ordering; it must not read as zero
 // for a process using eight cores just because the format assumed one.
 func TestTopTableShowsRatesAboveOneCore(t *testing.T) {
-	out := TopTable(ranked(), "", 0)
+	out := TopTable(ranked(), top.Focus{}, "", 0)
 
 	if !strings.Contains(out, "812") {
 		t.Errorf("a rate above 100%% is missing from:\n%s", out)
@@ -66,7 +66,7 @@ func TestTopTableKeepsItsColumnsWhenANameIsWide(t *testing.T) {
 		{Process: proc.Process{PID: 4, Name: "Code Helper", Cwd: "/four"}},
 	}
 
-	out := TopTable(rows, "", 0)
+	out := TopTable(rows, top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	// DIR is last, so where its cell begins is where every earlier column
@@ -93,7 +93,7 @@ func TestTopTableExplainsItsMarker(t *testing.T) {
 		{Process: proc.Process{PID: 2, Name: "claude"}},
 	}
 
-	out := TopTable(rows, "", 0)
+	out := TopTable(rows, top.Focus{}, "", 0)
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 
 	if !strings.HasPrefix(lines[1], forgottenMark) {
@@ -112,7 +112,7 @@ func TestTopTableExplainsItsMarker(t *testing.T) {
 func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 	plain := TopTable([]top.Process{
 		{Process: proc.Process{PID: 1, Name: "bun", Exe: "/opt/homebrew/bin/bun", Cwd: "/x"}},
-	}, "", 0)
+	}, top.Focus{}, "", 0)
 
 	if strings.Contains(plain, "APP") {
 		t.Errorf("an APP column was rendered with nothing in it:\n%s", plain)
@@ -123,7 +123,7 @@ func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 
 	bundled := TopTable([]top.Process{
 		{Process: proc.Process{PID: 1, Name: "stable", Exe: "/Applications/Warp.app/Contents/MacOS/stable"}},
-	}, "", 0)
+	}, top.Focus{}, "", 0)
 
 	if !strings.Contains(bundled, "APP") || !strings.Contains(bundled, "Warp") {
 		t.Errorf("the APP column is missing when a process has one:\n%s", bundled)
@@ -131,7 +131,7 @@ func TestTopTableDropsColumnsWithNothingInThem(t *testing.T) {
 }
 
 func TestTopTableSaysWhenThereIsNothingToRank(t *testing.T) {
-	if out := TopTable(nil, "", 0); !strings.Contains(out, "no processes") {
+	if out := TopTable(nil, top.Focus{}, "", 0); !strings.Contains(out, "no processes") {
 		t.Errorf("TopTable(nil) = %q", out)
 	}
 }

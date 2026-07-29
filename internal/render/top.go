@@ -48,8 +48,14 @@ const forgottenMark = "!"
 // every process outside a macOS bundle, which on Linux is all of them; the
 // marker column is empty when nothing is forgotten. Rendering either as a strip
 // of blanks would cost width that DIR can use.
-func TopTable(rows []top.Process, home string, width int) string {
+func TopTable(rows []top.Process, focus top.Focus, home string, width int) string {
 	if len(rows) == 0 {
+		// The two empty tables mean opposite things. "No processes to rank"
+		// under a focus would say the machine is idle, when what happened is
+		// that the reader asked for something the machine is not running.
+		if focus.Active() {
+			return fmt.Sprintf("nothing matches %s — press / to change it\n", focus)
+		}
 		return "no processes to rank\n"
 	}
 
