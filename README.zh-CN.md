@@ -388,7 +388,8 @@ top:
   - [ADR-0008](docs/adr/0008-store-cumulative-cpu-time-not-a-percentage.md) —— Sample 为何存累计计数器而非百分比
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) —— 采集器为何是「单守护进程 + 以数据库为控制面」
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) —— `top` 为何只排它能真正测准的进程
-  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — 流量为何取自长驻 `nettop` 而不是那个私有框架
+  - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) —— 流量为何取自长驻 `nettop` 而不是那个私有框架
+  - [ADR-0013](docs/adr/0013-a-focus-is-typed-into-the-view-and-cannot-be-silent.md) —— 为什么 focus 不是忽略列表,以及它为什么必须说出自己藏了什么
 - [`CONTEXT.md`](CONTEXT.md) —— 项目术语表
 
 ## 许可证

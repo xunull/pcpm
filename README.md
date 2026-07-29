@@ -390,6 +390,7 @@ Resolution order is `flag > PCPM_* environment variable > config file > built-in
   - [ADR-0009](docs/adr/0009-one-daemon-controlled-through-the-database.md) — why the collector is one daemon controlled through the database
   - [ADR-0011](docs/adr/0011-unprivileged-visibility-ceiling.md) — why `top` ranks only what it can actually measure
   - [ADR-0012](docs/adr/0012-traffic-comes-from-a-long-lived-nettop.md) — why traffic comes from a long-lived `nettop` rather than the framework
+  - [ADR-0013](docs/adr/0013-a-focus-is-typed-into-the-view-and-cannot-be-silent.md) — why a focus is not the ignore list, and why it has to say what it hides
 - [`CONTEXT.md`](CONTEXT.md) — the project's glossary
 
 ## License
