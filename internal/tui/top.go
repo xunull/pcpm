@@ -215,7 +215,10 @@ func (m TopModel) View() string {
 func (m TopModel) head() string {
 	head := render.TopHeader(m.frame.Totals)
 	if m.focus.Active() {
-		head += render.FocusSummary(top.Total(m.matching()), top.Total(m.frame.Rows))
+		// The denominators come from the frame's own totals, which is what the
+		// header above was rendered from. Adding the rows up again here would
+		// let the two lines disagree about the same ranking.
+		head += render.FocusSummary(top.Total(m.matching()), m.frame.Totals.Ranked())
 	}
 	return head
 }

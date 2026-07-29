@@ -141,7 +141,29 @@ func ShortPathAround(path, home string, maxLen int, match string) string {
 	// The matched segment alone is too wide to sit beside the tail. Keep the
 	// reason the row is on screen and let the end of the path go: a reader who
 	// can see neither has nothing at all.
-	return truncate(ellipsis+"/"+segments[found], maxLen)
+	prefix := ellipsis + "/"
+	return prefix + keepMatch(segments[found], match, maxLen-displayWidth(prefix))
+}
+
+// keepMatch trims one path segment to width, keeping the text that matched
+// inside it.
+//
+// An ordinary truncation keeps the head, which is wrong here: the match can sit
+// at the far end of a long segment — a build directory ending in the name being
+// looked for — and cutting it off removes the only thing this collapse exists to
+// show.
+func keepMatch(segment, match string, width int) string {
+	if displayWidth(segment) <= width {
+		return segment
+	}
+	at := strings.Index(strings.ToLower(segment), strings.ToLower(match))
+	// Either there is no match to protect, or everything up to the end of it
+	// fits anyway, in which case keeping the head keeps the match too.
+	if at < 0 || displayWidth(segment[:at+len(match)]) <= width {
+		return truncate(segment, width)
+	}
+	// It does not fit, so give up the start of the segment rather than the match.
+	return ellipsis + headColumns(segment[at:], width-displayWidth(ellipsis))
 }
 
 // encodeJSON marshals v as an indented JSON document. HTML escaping is off so

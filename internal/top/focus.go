@@ -46,13 +46,13 @@ type term struct {
 // given one is not silently hiding anything.
 type Focus struct {
 	terms []term
-	// query is what was typed, kept verbatim for showing back. Rebuilding it
+	// text is what was typed, kept verbatim for showing back. Rebuilding it
 	// from the terms would echo something subtly different from what the reader
 	// pressed, in a footer whose job is to remind them what they did.
-	query string
+	text string
 }
 
-// ParseFocus reads a query into a Focus.
+// ParseFocus reads what a reader typed into a Focus.
 //
 // Words are separated by whitespace and combine with *and*: each word a reader
 // adds takes rows away. Combining with or would let an added word bring rows
@@ -61,9 +61,9 @@ type Focus struct {
 // There is no quoting. A directory with a space in it is reached by typing both
 // halves as separate words, which still finds it, so quoting would add syntax
 // to no end.
-func ParseFocus(query string) Focus {
-	f := Focus{query: query}
-	for _, word := range strings.Fields(query) {
+func ParseFocus(text string) Focus {
+	f := Focus{text: text}
+	for _, word := range strings.Fields(text) {
 		if t, ok := parseTerm(word); ok {
 			f.terms = append(f.terms, t)
 		}
@@ -72,7 +72,7 @@ func ParseFocus(query string) Focus {
 }
 
 // parseTerm reads one word. A prefix with nothing after it yields no term: it
-// is what a query looks like halfway through typing "dir:src", and treating it
+// is what typing looks like halfway through typing "dir:src", and treating it
 // as a term that matches nothing would blank the table between keystrokes.
 func parseTerm(word string) (term, bool) {
 	if name, rest, ok := strings.Cut(word, ":"); ok {
@@ -89,8 +89,8 @@ func parseTerm(word string) (term, bool) {
 // Active reports whether this Focus narrows anything.
 func (f Focus) Active() bool { return len(f.terms) > 0 }
 
-// String returns the query as it was typed.
-func (f Focus) String() string { return f.query }
+// String returns the Focus as it was typed.
+func (f Focus) String() string { return f.text }
 
 // Matches reports whether a row survives the Focus.
 func (f Focus) Matches(p Process) bool {
@@ -159,24 +159,4 @@ func (f Focus) Apply(rows []Process) []Process {
 		}
 	}
 	return out
-}
-
-// Sum is what a set of rows comes to, so that a narrowed ranking can say how
-// much of the machine it still accounts for.
-type Sum struct {
-	Count      int
-	CPUPercent float64
-	RSSBytes   int64
-}
-
-// Total adds up rows. It is taken over every matching process rather than the
-// ones that fit on screen, so that the figure describes the Focus rather than
-// the height of the terminal it happens to be read in.
-func Total(rows []Process) Sum {
-	s := Sum{Count: len(rows)}
-	for _, p := range rows {
-		s.CPUPercent += p.CPUPercent
-		s.RSSBytes += p.RSSBytes
-	}
-	return s
 }

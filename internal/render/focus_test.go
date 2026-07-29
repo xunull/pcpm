@@ -24,7 +24,7 @@ func TestFocusSummaryStatesWhatTheKeptRowsComeTo(t *testing.T) {
 // comparing the two lines should not have to notice a change of scale.
 func TestFocusSummaryUsesTheSamePercentScaleAsTheHeader(t *testing.T) {
 	line := FocusSummary(top.Sum{Count: 1, CPUPercent: 118.4}, top.Sum{Count: 2, CPUPercent: 264.9})
-	header := TopHeader(top.Totals{BusyPercent: 118.4, AttributedPercent: 264.9})
+	header := TopHeader(top.Totals{BusyPercent: 118.4}.WithRanked(top.Sum{CPUPercent: 264.9}))
 
 	for _, want := range []string{"118%", "265%"} {
 		if !strings.Contains(line, want) {

@@ -80,6 +80,22 @@ func TestAWideMatchedSegmentKeepsTheColumn(t *testing.T) {
 	}
 }
 
+// The match can sit at the far end of a segment too wide for the column. Keeping
+// the segment's head, as an ordinary truncation does, cuts off the one thing the
+// collapse exists to show.
+func TestAMatchLateInAWideSegmentIsStillVisible(t *testing.T) {
+	path := "/a/" + strings.Repeat("log-", 12) + "chrome/b/c/d"
+
+	got := ShortPathAround(path, "", 32, "chrome")
+
+	if displayWidth(got) > 32 {
+		t.Errorf("%q is %d columns; the column allows 32", got, displayWidth(got))
+	}
+	if !strings.Contains(got, "chrome") {
+		t.Errorf("the match was truncated away: %q", got)
+	}
+}
+
 func TestTheColumnCarriesNoEscapeSequences(t *testing.T) {
 	got := ShortPathAround(deep, "", 32, "xunull-repository")
 	if strings.ContainsRune(got, 0x1b) {

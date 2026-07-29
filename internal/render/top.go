@@ -19,7 +19,7 @@ func TopHeader(t top.Totals) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CPU  %s%% of %s%% (%d cores)  ·  attributed %s%%  ·  unattributed %s%%",
 		rankedPercent(t.BusyPercent), rankedPercent(t.Capacity()), t.Cores,
-		rankedPercent(t.AttributedPercent), rankedPercent(t.UnattributedPercent()))
+		rankedPercent(t.AttributedPercent()), rankedPercent(t.UnattributedPercent()))
 	// The gap is always shown. Hiding it when running as root would assume it
 	// falls to zero there, and it does not: kernel_task is PID 0, which cannot
 	// be read at any privilege. Only the remedy is conditional, because there
@@ -165,7 +165,7 @@ func TopJSON(rows []top.Process, t top.Totals) (string, error) {
 			Cores:               t.Cores,
 			BusyPercent:         t.BusyPercent,
 			CapacityPercent:     t.Capacity(),
-			AttributedPercent:   t.AttributedPercent,
+			AttributedPercent:   t.AttributedPercent(),
 			UnattributedPercent: t.UnattributedPercent(),
 			Complete:            t.Complete,
 		},

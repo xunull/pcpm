@@ -14,9 +14,9 @@ func row(name, cwd, exe string) Process {
 const chromeExe = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 func TestAnEmptyFocusIsNotActive(t *testing.T) {
-	for _, query := range []string{"", "   ", "\t"} {
-		if f := ParseFocus(query); f.Active() {
-			t.Errorf("ParseFocus(%q) is active; want inactive so that it hides nothing", query)
+	for _, text := range []string{"", "   ", "\t"} {
+		if f := ParseFocus(text); f.Active() {
+			t.Errorf("ParseFocus(%q) is active; want inactive so that it hides nothing", text)
 		}
 	}
 }
@@ -49,9 +49,9 @@ func TestABareWordMatchesAnyOfTheThreeFields(t *testing.T) {
 
 func TestMatchingIgnoresCase(t *testing.T) {
 	p := row("Google Chrome Helper", "/Users/q/Src", chromeExe)
-	for _, query := range []string{"chrome", "CHROME", "ChRoMe", "dir:src", "app:GOOGLE"} {
-		if !ParseFocus(query).Matches(p) {
-			t.Errorf("ParseFocus(%q) did not match; want matching to ignore case", query)
+	for _, text := range []string{"chrome", "CHROME", "ChRoMe", "dir:src", "app:GOOGLE"} {
+		if !ParseFocus(text).Matches(p) {
+			t.Errorf("ParseFocus(%q) did not match; want matching to ignore case", text)
 		}
 	}
 }
@@ -64,7 +64,7 @@ func TestAPrefixLimitsAWordToOneField(t *testing.T) {
 	inApp := row("helper", "/src/project", chromeExe)
 
 	cases := []struct {
-		query string
+		text  string
 		want  Process
 		other []Process
 	}{
@@ -73,13 +73,13 @@ func TestAPrefixLimitsAWordToOneField(t *testing.T) {
 		{"app:chrome", inApp, []Process{inName, inDir}},
 	}
 	for _, c := range cases {
-		f := ParseFocus(c.query)
+		f := ParseFocus(c.text)
 		if !f.Matches(c.want) {
-			t.Errorf("ParseFocus(%q) did not match the row it names", c.query)
+			t.Errorf("ParseFocus(%q) did not match the row it names", c.text)
 		}
 		for _, o := range c.other {
 			if f.Matches(o) {
-				t.Errorf("ParseFocus(%q) matched a row whose hit is in another field", c.query)
+				t.Errorf("ParseFocus(%q) matched a row whose hit is in another field", c.text)
 			}
 		}
 	}
@@ -87,9 +87,9 @@ func TestAPrefixLimitsAWordToOneField(t *testing.T) {
 
 func TestAPrefixIsRecognisedWhateverItsCase(t *testing.T) {
 	p := row("node", "/src/chrome", "")
-	for _, query := range []string{"dir:chrome", "DIR:chrome", "Dir:Chrome"} {
-		if !ParseFocus(query).Matches(p) {
-			t.Errorf("ParseFocus(%q) did not match; want the prefix recognised whatever its case", query)
+	for _, text := range []string{"dir:chrome", "DIR:chrome", "Dir:Chrome"} {
+		if !ParseFocus(text).Matches(p) {
+			t.Errorf("ParseFocus(%q) did not match; want the prefix recognised whatever its case", text)
 		}
 	}
 }
@@ -135,9 +135,9 @@ func TestAColonThatIsNotAKnownPrefixIsPartOfTheWord(t *testing.T) {
 func TestAFocusReportsWhatWasTyped(t *testing.T) {
 	// The footer shows this back, so it has to be what the reader typed rather
 	// than a reconstruction from the parsed terms.
-	const query = "dir:Src  chrome"
-	if got := ParseFocus(query).String(); got != query {
-		t.Errorf("String() = %q; want the query as typed, %q", got, query)
+	const text = "dir:Src  chrome"
+	if got := ParseFocus(text).String(); got != text {
+		t.Errorf("String() = %q; want the text as typed, %q", got, text)
 	}
 }
 

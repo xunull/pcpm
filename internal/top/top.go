@@ -70,16 +70,42 @@ type SystemReading struct {
 	MemoryTotalBytes int64
 }
 
+// Sum is what a set of rows comes to. A narrowed ranking uses it to say how
+// much of the whole it still accounts for, and the whole ranking's own Sum is
+// what the header's attributed figure is made of.
+type Sum struct {
+	Count      int
+	CPUPercent float64
+	RSSBytes   int64
+}
+
+// Total adds up rows.
+//
+// Callers take it over every row they mean rather than the ones that fit on a
+// screen, so that the figure describes the rows and not the height of the
+// terminal it happens to be read in.
+func Total(rows []Process) Sum {
+	s := Sum{Count: len(rows)}
+	for _, p := range rows {
+		s.CPUPercent += p.CPUPercent
+		s.RSSBytes += p.RSSBytes
+	}
+	return s
+}
+
 // Totals is what the machine did over a window, and how much of it the ranking
 // could account for.
 type Totals struct {
 	Cores int
 	// BusyPercent is per core on the same scale as a row: 699 means just under
 	// seven of ten cores were occupied.
-	BusyPercent       float64
-	AttributedPercent float64
-	MemoryUsedBytes   int64
-	MemoryTotalBytes  int64
+	BusyPercent float64
+	// ranked is what the frame's rows come to. The header quotes the CPU share
+	// of it; anything else that has to agree with the header reads it from here
+	// rather than adding the rows up again, so the two cannot drift apart.
+	ranked           Sum
+	MemoryUsedBytes  int64
+	MemoryTotalBytes int64
 	// Complete says the ranking covered every process on the machine, which is
 	// only true when running as root. When false, the unattributed figure has a
 	// remedy worth naming.
@@ -97,8 +123,20 @@ type Totals struct {
 // It is clamped at zero: the host counters and the per-process counters are
 // read microseconds apart, and a negative would be that skew, not a fact.
 func (t Totals) UnattributedPercent() float64 {
-	return math.Max(t.BusyPercent-t.AttributedPercent, 0)
+	return math.Max(t.BusyPercent-t.AttributedPercent(), 0)
 }
+
+// Ranked is what the frame's rows came to: how many there were, and what they
+// consumed between them.
+func (t Totals) Ranked() Sum { return t.ranked }
+
+// AttributedPercent is the busy CPU the ranking assigned to processes, which is
+// by construction the sum over its rows.
+func (t Totals) AttributedPercent() float64 { return t.ranked.CPUPercent }
+
+// WithRanked returns the totals with the ranking's own figures set. It exists
+// for tests that need a Totals without a ranking behind it.
+func (t Totals) WithRanked(s Sum) Totals { t.ranked = s; return t }
 
 // Capacity is what every core in the machine running flat out would read.
 func (t Totals) Capacity() float64 { return float64(t.Cores) * 100 }
@@ -423,11 +461,6 @@ func (r *Ranker) Next(now time.Time) (*Frame, error) {
 	// would change with the terminal's height.
 	rows := Rank(previous, snap, known, r.Options)
 
-	var attributed float64
-	for _, p := range rows {
-		attributed += p.CPUPercent
-	}
-
 	forgottenPIDs := Forgotten(known, r.Ignore)
 	for i := range rows {
 		rows[i].Forgotten = forgottenPIDs[rows[i].PID]
@@ -435,11 +468,14 @@ func (r *Ranker) Next(now time.Time) (*Frame, error) {
 
 	elapsed := snap.At.Sub(previous.At).Seconds()
 	totals := Totals{
-		Cores:             snap.System.Cores,
-		AttributedPercent: attributed,
-		MemoryUsedBytes:   snap.System.MemoryUsedBytes,
-		MemoryTotalBytes:  snap.System.MemoryTotalBytes,
-		Complete:          r.Options.Owner.complete(),
+		Cores: snap.System.Cores,
+		// Summed once, here. The header quotes the CPU share of this and a
+		// narrowed view quotes all three parts of it, so adding the rows up a
+		// second time somewhere else is how the two would come to disagree.
+		ranked:           Total(rows),
+		MemoryUsedBytes:  snap.System.MemoryUsedBytes,
+		MemoryTotalBytes: snap.System.MemoryTotalBytes,
+		Complete:         r.Options.Owner.complete(),
 	}
 	if elapsed > 0 {
 		totals.BusyPercent = math.Max(snap.System.BusySeconds-previous.System.BusySeconds, 0) / elapsed * 100

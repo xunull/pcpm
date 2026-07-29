@@ -139,7 +139,7 @@ func TestTopTableSaysWhenThereIsNothingToRank(t *testing.T) {
 // The table has no room for a command line, so JSON is where it has to survive
 // intact — that is the point of having both.
 func TestTopJSONKeepsTheWholeCommandLine(t *testing.T) {
-	body, err := TopJSON(ranked(), top.Totals{Cores: 10, BusyPercent: 900, AttributedPercent: 825})
+	body, err := TopJSON(ranked(), top.Totals{Cores: 10, BusyPercent: 900}.WithRanked(top.Sum{CPUPercent: 825}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +198,9 @@ func TestTopJSONRendersNothingAsAnEmptyArray(t *testing.T) {
 // thirds of it, and what to do about the difference.
 func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
 	out := TopHeader(top.Totals{
-		Cores: 10, BusyPercent: 699, AttributedPercent: 551,
+		Cores: 10, BusyPercent: 699,
 		MemoryUsedBytes: 52 << 30, MemoryTotalBytes: 64 << 30,
-	})
+	}.WithRanked(top.Sum{CPUPercent: 551}))
 
 	for _, want := range []string{"699%", "1000%", "10 cores", "551%", "148%", "sudo"} {
 		if !strings.Contains(out, want) {
@@ -216,7 +216,7 @@ func TestTopHeaderStatesTheGapAndItsRemedy(t *testing.T) {
 // cannot be read at any privilege, so a residual remains and hiding it would be
 // assuming it away.
 func TestACompleteRankingStillReportsItsResidual(t *testing.T) {
-	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, AttributedPercent: 690, Complete: true})
+	out := TopHeader(top.Totals{Cores: 10, BusyPercent: 699, Complete: true}.WithRanked(top.Sum{CPUPercent: 690}))
 
 	if !strings.Contains(out, "unattributed 9.0%") {
 		t.Errorf("a complete ranking dropped its residual:\n%s", out)

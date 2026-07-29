@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -9,10 +10,10 @@ import (
 	"github.com/xunull/pcpm/internal/top"
 )
 
-// focused returns a ranking narrowed to the given query.
-func focused(t *testing.T, m TopModel, query string) TopModel {
+// focused returns a ranking narrowed to the given text.
+func focused(t *testing.T, m TopModel, text string) TopModel {
 	t.Helper()
-	return press(t, typed(t, press(t, m, runes("/")), query), tea.KeyMsg{Type: tea.KeyEnter})
+	return press(t, typed(t, press(t, m, runes("/")), text), tea.KeyMsg{Type: tea.KeyEnter})
 }
 
 func TestNoSummaryAppearsWhenNothingIsNarrowed(t *testing.T) {
@@ -80,4 +81,25 @@ func summaryLine(t *testing.T, view string) string {
 	}
 	t.Fatalf("no focus summary in:\n%s", view)
 	return ""
+}
+
+// The summary exists to be compared against the header, so the one figure they
+// share has to be the same figure, not two additions that happen to agree.
+func TestTheSummaryQuotesTheHeadersOwnAttributedFigure(t *testing.T) {
+	view := focused(t, ranking(t), "busy").View()
+
+	header := regexp.MustCompile(`attributed (\S+?)%`).FindStringSubmatch(view)
+	if header == nil {
+		t.Fatalf("no attributed figure in the header:\n%s", view)
+	}
+	summary := regexp.MustCompile(`of (\S+?)%`).FindStringSubmatch(summaryLine(t, view))
+	if summary == nil {
+		t.Fatalf("the summary states no CPU denominator:\n%s", view)
+	}
+
+	if summary[1] != header[1] {
+		t.Errorf("the summary's denominator is %s%% but the header says %s%%; "+
+			"the two lines describe the same ranking and must not disagree",
+			summary[1], header[1])
+	}
 }

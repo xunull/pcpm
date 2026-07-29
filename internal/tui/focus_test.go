@@ -207,3 +207,14 @@ func TestAFocusThatMatchesNothingSaysSoWithoutClaimingTheMachineIsIdle(t *testin
 		t.Errorf("an unmatched focus does not say that nothing matched:\n%s", view)
 	}
 }
+
+// The footer is where a reader checks what they narrowed to, so it has to show
+// the whole thing — prefixes and every word, not the first one.
+func TestTheFooterShowsAPrefixedFocusInFull(t *testing.T) {
+	const whole = "dir:src name:node"
+	m := press(t, typed(t, press(t, ranking(t), runes("/")), whole), tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !strings.Contains(m.footer(), whole) {
+		t.Errorf("the footer shows %q; want the whole focus %q", m.footer(), whole)
+	}
+}
