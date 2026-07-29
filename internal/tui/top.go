@@ -197,12 +197,27 @@ func (m TopModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(render.TopHeader(m.frame.Totals))
+	b.WriteString(m.head())
 	b.WriteByte('\n')
 	b.WriteString(render.TopTable(m.visible(), m.focus, m.home, m.width))
 	b.WriteByte('\n')
 	b.WriteString(m.footer())
 	return b.String()
+}
+
+// head is what the machine did, and — while a Focus is narrowing the rows —
+// how much of that the rows still account for.
+//
+// The header itself does not change under a Focus. It is a statement about the
+// machine, and the machine did not do anything different because a reader typed
+// a word; what changes is how much of it is on screen, which is what the line
+// below it is for.
+func (m TopModel) head() string {
+	head := render.TopHeader(m.frame.Totals)
+	if m.focus.Active() {
+		head += render.FocusSummary(top.Total(m.matching()), top.Total(m.frame.Rows))
+	}
+	return head
 }
 
 // matching is the whole ranking as the focus leaves it — every row it keeps,
@@ -230,7 +245,7 @@ func (m TopModel) visible() []top.Process {
 
 // chrome is how many lines the view spends on things that are not rows.
 func (m TopModel) chrome(withLegend bool) int {
-	lines := strings.Count(render.TopHeader(m.frame.Totals), "\n") + // the header
+	lines := strings.Count(m.head(), "\n") + // the header, and the focus summary under it
 		1 + // the blank line under it
 		1 + // the column headings
 		1 + // the blank line above the footer
