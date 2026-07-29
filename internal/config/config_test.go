@@ -168,3 +168,112 @@ func TestTrafficCollectionCanBeTurnedOff(t *testing.T) {
 		t.Error("network: false was ignored")
 	}
 }
+
+// An Interval shorter than a sample takes to gather makes pcpm a significant
+// part of what it is measuring — enough CPU, at 100ms, to rank itself.
+func TestAnIntervalTooShortToMeasureInIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("top:\n  interval: 100ms\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(nil, path)
+
+	if err == nil {
+		t.Fatal("an interval below the minimum was accepted")
+	}
+	if !strings.Contains(err.Error(), "top.interval") {
+		t.Errorf("error %q does not name the setting", err)
+	}
+	// "invalid" would leave a reader guessing at what to type instead.
+	if !strings.Contains(err.Error(), top.MinInterval.String()) {
+		t.Errorf("error %q does not say what the minimum is", err)
+	}
+}
+
+// The boundary belongs to the accepted side, or the message names a value that
+// is itself refused.
+func TestTheMinimumIntervalIsItselfAccepted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "top:\n  interval: " + top.MinInterval.String() + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(nil, path)
+
+	if err != nil {
+		t.Fatalf("the minimum interval was refused: %v", err)
+	}
+	if cfg.Top.Interval != top.MinInterval {
+		t.Errorf("interval = %v, want %v", cfg.Top.Interval, top.MinInterval)
+	}
+}
+
+// The three ways to set an Interval must be refused alike. Validating after the
+// sources are resolved is what makes that true, and this pins it: a check moved
+// into any one reader would leave the other two open.
+func TestAShortIntervalIsRefusedWhicheverWaySetIt(t *testing.T) {
+	tooShort := (top.MinInterval - time.Millisecond).String()
+
+	t.Run("flag", func(t *testing.T) {
+		flags := pflag.NewFlagSet("top", pflag.ContinueOnError)
+		flags.Duration("interval", top.DefaultInterval, "")
+		if err := flags.Set("interval", tooShort); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(flags, filepath.Join(t.TempDir(), "none.yaml")); err == nil {
+			t.Error("a short interval given as a flag was accepted")
+		}
+	})
+
+	t.Run("environment", func(t *testing.T) {
+		t.Setenv("PCPM_TOP_INTERVAL", tooShort)
+		if _, err := Load(nil, filepath.Join(t.TempDir(), "none.yaml")); err == nil {
+			t.Error("a short interval given in the environment was accepted")
+		}
+	})
+}
+
+// Every nested setting was unreachable from the environment: viper builds the
+// variable name from the key verbatim, so it looked for PCPM_TOP.INTERVAL — a
+// name no shell will export, a dot not being valid in an identifier. The
+// documented resolution order promised otherwise, for every key but the
+// top-level one that happens to have no dot in it.
+func TestNestedSettingsCanBeSetFromTheEnvironment(t *testing.T) {
+	t.Setenv("PCPM_TOP_INTERVAL", "3s")
+	t.Setenv("PCPM_TOP_NUMBER", "7")
+	t.Setenv("PCPM_WATCH_SAMPLE_INTERVAL", "11s")
+	t.Setenv("PCPM_WATCH_NETWORK", "false")
+
+	cfg, err := Load(nil, filepath.Join(t.TempDir(), "none.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Top.Interval != 3*time.Second {
+		t.Errorf("top.interval = %v, want 3s", cfg.Top.Interval)
+	}
+	if cfg.Top.Number != 7 {
+		t.Errorf("top.number = %d, want 7", cfg.Top.Number)
+	}
+	if cfg.Watch.SampleInterval != 11*time.Second {
+		t.Errorf("watch.sample_interval = %v, want 11s", cfg.Watch.SampleInterval)
+	}
+	if cfg.Watch.Network {
+		t.Error("watch.network = true, want the environment's false")
+	}
+}
+
+// The top-level key worked before the replacer and must still work after it.
+func TestATopLevelSettingStillComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("PCPM_IGNORE", "gbrain node")
+
+	cfg, err := Load(nil, filepath.Join(t.TempDir(), "none.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Ignore) == 0 {
+		t.Error("PCPM_IGNORE reached nothing")
+	}
+}

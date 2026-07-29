@@ -46,6 +46,10 @@ _Avoid_: uptime, completeness, availability, data quality
 
 ## Ranking what is busy
 
+**Interval**:
+How long a measurement covers, which is the same number as how long there is between one measurement and the next — one setting, not two that happen to agree. A rate exists only as the difference between two readings, so every figure on screen is by construction the average over exactly one Interval. Lengthening it therefore does more than slow the redraw: it also flattens brief spikes into the calm around them.
+_Avoid_: refresh rate, sampling rate, poll period, tick
+
 **Unattributed CPU**:
 Busy CPU time that could not be assigned to any process pcpm was able to read. It exists because another user's process reports zero rather than an error, and because the kernel task cannot be read at all; the machine's own totals, by contrast, need no privilege. Reported as a quantity beside the ranking rather than left as an absence, so that a reader can tell whether the rows account for the machine or only part of it.
 _Avoid_: system CPU, kernel CPU, other CPU, overhead
