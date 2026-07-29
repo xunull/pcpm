@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -33,8 +34,8 @@ type Config struct {
 
 // TopConfig is what `pcpm top` does when asked for nothing in particular.
 //
-// Interval is both the refresh period and the window each figure averages over
-// — they are the same measurement, so they cannot be set apart. Raising it
+// Interval is both the gap between redraws and the window each figure averages
+// over — they are the same measurement, so they cannot be set apart. Raising it
 // steadies the ordering at the cost of noticing a change later, and of a longer
 // wait before a one-shot answers.
 //
@@ -94,6 +95,12 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	v.SetDefault("top.sort", "cpu")
 
 	v.SetEnvPrefix("PCPM")
+	// Nested keys hold a dot, and without this the variable a reader would have
+	// to set is PCPM_TOP.INTERVAL — a name no shell will export, because a dot
+	// is not valid in an identifier. Every setting under top. and watch. was
+	// therefore unreachable from the environment, while the documented
+	// resolution order promised otherwise.
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
 	// Binding the flags here keeps one resolution order for everything. Doing
@@ -142,6 +149,13 @@ func Load(flags *pflag.FlagSet, explicitPath string) (Config, error) {
 	}
 	if d := v.GetDuration("top.interval"); d <= 0 {
 		return Config{}, fmt.Errorf("top.interval: %s leaves no time for a rate to be measured", d)
+	} else if d < top.MinInterval {
+		// Naming the minimum rather than only refusing the value: a reader told
+		// their setting is invalid still has to guess what to type instead.
+		return Config{}, fmt.Errorf(
+			"top.interval: %s is short enough that reading the process table would be "+
+				"a large part of it, and pcpm would rank itself; the minimum is %s",
+			d, top.MinInterval)
 	}
 
 	return Config{

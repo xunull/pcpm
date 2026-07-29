@@ -119,22 +119,22 @@ pcpm ports -o json
 
 ```console
 $ pcpm top -n 6
-CPU  193% of 1000% (10 cores)  ·  attributed 170%  ·  unattributed 22.8% (needs sudo)
-MEM  49 GB / 64 GB
+CPU  504% of 1000% (10 cores)  ·  attributed 376%  ·  unattributed 128% (needs sudo)
+MEM  39 GB / 64 GB
 
-%CPU     RSS    PID  NAME                           APP     DIR
-15.9  217 MB  56394  stable                         Warp    ~
-13.5  615 MB  61742  claude                                 …/open-source/pcpm
-11.2  217 MB  62625  WeChatAppEx Helper (Renderer)  WeChat  …/Contents/MacOS
-10.0  300 MB  34442  Kimi Helper (Renderer)         Kimi    /
- 8.1   23 MB  61398  pcpm-r                                 …/open-source/pcpm
- 7.9   28 MB  25922  pcpm                                   …/open-source/pcpm
+%CPU     RSS    PID  NAME                             APP            DIR
+90.9  633 MB  72917  node                                            …/open-source/ai2nao
+89.5  1.3 GB   7568  Google Chrome                    Google Chrome  /
+40.0  143 MB  36680  Google Chrome Helper (Renderer)  Google Chrome  /
+22.9  368 MB   7169  Google Chrome Helper (Renderer)  Google Chrome  /
+22.1  162 MB   7148  Google Chrome Helper (Renderer)  Google Chrome  /
+17.8  270 MB  30779  Kimi Helper (Renderer)           Kimi           /
 ```
 
 在终端里它会按间隔持续刷新,按 `q` 退出。一旦被管道或重定向接走,就只打一帧然后退出 —— 所以 `pcpm top | head`、`pcpm top -o json > f.json` 都不需要额外加开关;在终端里想只打一帧,用 `--once`。
 
 ```
-q quit   [c cpu]  m memory    / focus   every 1s
+q quit   [c cpu]  m memory    / focus   every 2s
 ```
 
 ### 把范围收窄
@@ -167,19 +167,19 @@ q quit   [c cpu]  m memory    / focus   every 1s
 focus 只活在交互界面里:`--once` 和 `-o json` 没有 focus。真正值得留下来的收窄,那是[忽略列表](#配置)该干的事。
 
 ```console
-CPU  581% of 1000% (10 cores)  ·  attributed 477%  ·  unattributed 104% (needs sudo)
-MEM  37 GB / 64 GB
-matching 139 of 886  ·  CPU 92.7% of 477%  ·  RSS 17 GB of 55 GB
+CPU  354% of 1000% (10 cores)  ·  attributed 264%  ·  unattributed 89.2% (needs sudo)
+MEM  39 GB / 64 GB
+matching 108 of 830  ·  CPU 37.3% of 264%  ·  RSS 9.1 GB of 40 GB
 
 %CPU     RSS    PID  NAME      DIR
-35.3  1.5 GB  16779  opencode  …/xunull-repository
-19.1   21 MB   4243  tui.test  …/xunull-repository/…/tui
- 8.0  898 MB   9960  claude    …/xunull-repository/…/pcpm
- 6.0  733 MB  88439  opencode  …/xunull-repository
- 5.3   28 MB  12493  pcpm      …/xunull-repository/…/pcpm
- 5.1   28 MB  42295  pcpm      …/xunull-repository/…/aifd
+ 7.8   22 MB  36750  tui.test  …/xunull-repository/…/tui
+ 7.6  702 MB   9960  claude    …/xunull-repository/…/pcpm
+ 7.1  582 MB  97278  claude    …/xunull-repository/…/ai2nao
+ 4.8   26 MB  98314  pcpm      …/xunull-repository/…/pcpm
+ 3.2  646 MB  88439  opencode  …/xunull-repository
+ 1.7  584 MB   7561  opencode  …/xunull-repository
 
-q quit   [c cpu]  m memory    / focus   every 1s
+q quit   [c cpu]  m memory    / focus   every 2s
 focus: dir:xunull-repository
 ```
 
@@ -191,7 +191,9 @@ focus: dir:xunull-repository
 
 **`focus: dir:xunull-repository`。** 只要还生效就一直显示,而不是只在设定的那一刻闪一下 —— 因为一旦你忘了自己收窄过,三行的表和一台闲置的机器长得一模一样。
 
-**它要等一秒才出结果,这不是 bug。** 内核根本不存"CPU 使用率"这个数,只存"这个进程从出生到现在一共烧了多少 CPU 秒"。率只能是两次读数之差,所以 pcpm 必须读两遍再相减。任何瞬间就给出答案的工具,报的都是**终身平均** —— `ps aux` 的 `%CPU` 就是"累计 CPU ÷ 进程年龄":实测某个真实占用 26.5% 的进程,它报 14.5%。
+**它要等两秒才出结果,这不是 bug。** 内核根本不存"CPU 使用率"这个数,只存"这个进程从出生到现在一共烧了多少 CPU 秒"。率只能是两次读数之差,所以 pcpm 必须读两遍再相减。任何瞬间就给出答案的工具,报的都是**终身平均** —— `ps aux` 的 `%CPU` 就是"累计 CPU ÷ 进程年龄":实测某个真实占用 26.5% 的进程,它报 14.5%。
+
+这段等待就是 **Interval**,而它是一个设置在干两件事:既是两次重绘之间的间隔,**也是**每个数字的平均窗口。调短它,变化反应更快,排名也更跳;调长它,顺序更稳,但短促的尖峰会被摊平进周围的平静里。默认是两秒 —— 一秒的重绘比人能读进去的速度还快。用 `-d` 指定你自己的值,下限 200ms —— 再低,读一遍进程表就会占掉每个 Interval 里够大的一块,pcpm 会开始把自己排进榜单。
 
 **百分比以单核为分母。** 100% = 吃满一个核;一个跑在八个核上的进程显示 800%,表头那个 `of 1000%` 就是这台十核机器的满载值。若改用整机做分母,最常见的那种故障 —— 单线程死循环 —— 会被显示成一个看着没事的 10%。
 
@@ -377,7 +379,7 @@ watch:
   network: true             # 是否采集流量(仅 macOS;会常驻一个子进程)
 
 top:
-  interval: 1s              # 既是刷新周期,也是每个数字的平均窗口
+  interval: 2s              # 既是刷新周期,也是每个数字的平均窗口
   number: 0                 # 0 = 按终端高度自适应;写任何其他值就是明确指定行数
   sort: cpu                 # cpu | mem
 ```
@@ -387,7 +389,7 @@ top:
 | `sample_interval` | 更省空间,曲线更粗 | 曲线更细,存储按比例增加。采一棵 10 进程的树约 106 µs,CPU 不是瓶颈 |
 | `discover_interval` | 更省;活不到一个周期的子进程会被完全漏掉 | 能抓到更短命的子进程。每次都要遍历整张进程表,约 27 ms |
 | `raw_retention` | 能下钻到单个进程的时间跨度更长 | 数据库更小;那段时间仍由 rollup 覆盖 |
-| `top.interval` | 排序更稳,但 `--once` 要等更久 | 变化反应更快,代价是数字更抖。之所以只有一个配置项,是因为刷新周期**就是**那个平均窗口 |
+| `top.interval` | 排序更稳,但 `--once` 要等更久 | 变化反应更快,代价是数字更抖。之所以只有一个配置项,是因为刷新周期**就是**那个平均窗口。低于 200ms 会被拒绝 |
 
 优先级为 `flag > PCPM_* 环境变量 > 配置文件 > 内置默认`。`--ignore` 是**追加**到配置列表之上,而不是替换它。
 

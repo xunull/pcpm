@@ -27,11 +27,26 @@ import (
 // Defaults for the ranking. They live here rather than in the config package so
 // that configuration and code cannot drift apart on what "the default" is.
 //
-// One second follows top(1). The interval is both the refresh period and the
-// window each figure averages over, so it cannot be shortened for
-// responsiveness without also making the figures noisier.
+// Two seconds, rather than the one second top(1) uses, because the Interval is
+// both the gap between redraws and the window each figure averages over: a redraw
+// slow enough to read is the same setting as a figure steady enough to trust.
+// It cannot be shortened for responsiveness without also making the figures
+// noisier, nor lengthened for calm without flattening brief spikes into it.
 const (
-	DefaultInterval = time.Second
+	DefaultInterval = 2 * time.Second
+	// MinInterval is the shortest Interval worth honouring.
+	//
+	// Below it the tool becomes a significant part of what it measures. One
+	// sample of this machine's 1152 processes costs 30–48ms once their names
+	// are cached, so at 100ms pcpm would spend a quarter to a half of every
+	// Interval measuring — enough CPU to put itself in its own ranking. The
+	// first sample, which has to describe every process, costs 274ms, so no
+	// shorter Interval can be met on the first frame anyway.
+	//
+	// It is not about correctness: a rate is derived from the real elapsed time
+	// between two snapshots rather than from the nominal Interval, so the
+	// arithmetic holds however long the sampling took.
+	MinInterval = 200 * time.Millisecond
 	// DefaultRows is how many rows to print where there is no window to fill.
 	DefaultRows = 10
 	// FitWindow, as a row count, means "as many as the terminal holds" — and
@@ -303,10 +318,12 @@ func descending(a, b float64) int {
 // process's counters, a dearer way to learn what a process is, and the
 // machine's own totals.
 //
-// The split is the whole reason a ranking can refresh once a second. Measured
-// on a machine running 1100 processes: the counters cost about 30ms all told,
-// while the names, command lines and launch directories cost another 50ms — and
-// those never change, so they are read once per process rather than per frame.
+// The split is the whole reason a ranking can refresh at all. Measured on a
+// machine running 1152 processes: a steady frame costs 30–48ms, because names,
+// command lines and launch directories never change and so are read once per
+// process rather than once per frame. The first frame, which has to describe
+// every process, costs 274ms — nine times a steady one, and the reason
+// MinInterval is what it is.
 type Machine interface {
 	Readings() ([]Reading, error)
 	Describe(pid int32) (proc.Process, error)
